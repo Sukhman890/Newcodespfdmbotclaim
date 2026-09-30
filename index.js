@@ -28,7 +28,7 @@ const userConversationStage = new Map();
 const CHECK_COOLDOWN_MS = 5_000;
 let checkChannel = null;
 
-// Keywords that allow trigger of invite checking
+// Expanded Keywords & Patterns that trigger an invite check
 const TRIGGER_KEYWORDS = [
   "done",
   "completed",
@@ -39,8 +39,20 @@ const TRIGGER_KEYWORDS = [
   "check",
   "invites done",
   "i did",
-  "finished"
+  "finished",
+  "claim",
+  "i got",
+  "i have",
+  "have 3",
+  "got 3",
+  "have 8",
+  "got 8",
+  "have 11",
+  "got 11"
 ];
+
+// Regex pattern to catch numbers inside claim messages like "i have 3", "got 5 invites", etc.
+const CLAIM_REGEX = /\b(have|got|did|done|made)\s*(\d+|\w+)\b/i;
 
 // ---------------------------------------------------------------------------
 // Client Initialization
@@ -89,8 +101,10 @@ async function logToCheckChannel(text) {
 }
 
 function isTriggerPhrase(text) {
-  const lower = text.toLowerCase();
-  return TRIGGER_KEYWORDS.some((kw) => lower.includes(kw));
+  const lower = text.toLowerCase().trim();
+  const matchedKeyword = TRIGGER_KEYWORDS.some((kw) => lower.includes(kw));
+  const matchedRegex = CLAIM_REGEX.test(lower);
+  return matchedKeyword || matchedRegex;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +297,7 @@ client.on("messageCreate", async (message) => {
 
       let stage = userConversationStage.get(userId) || 0;
 
-      // Stage 0: First interaction
+      // Stage 0: Initial interaction
       if (stage === 0) {
         await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
         userConversationStage.set(userId, 1);
@@ -304,12 +318,12 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Trigger phrase check before checking invites
+      // Check if message relates to claiming/invites/counts
       if (!isTriggerPhrase(rawText)) {
         return;
       }
 
-      // Check Invites Logic
+      // Run Invite Check Flow
       userConversationStage.set(userId, stage + 1);
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -336,7 +350,7 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Under-target status phrase
+      // Under-target status message
       const progressMsg = getUnderTargetText(current, target, stage);
       await sendDM(message.author, progressMsg);
       return;
@@ -347,7 +361,7 @@ client.on("messageCreate", async (message) => {
 
     const content = message.content.trim();
 
-    // Reset command for admins
+    // Admin reset command
     if (content.toLowerCase().startsWith("!resetinvites")) {
       if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
@@ -371,7 +385,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Account mention checking (only when message contains trigger keywords)
+    // Account mention check
     if (message.mentions.users.has(client.user.id)) {
       if (!isTriggerPhrase(content)) return;
 
@@ -408,7 +422,7 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Status text update
+      // Under-target status phrase
       const progressMsg = getUnderTargetText(current, target, stage);
       await message.channel.send(progressMsg);
     }
@@ -424,4 +438,3 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-      
