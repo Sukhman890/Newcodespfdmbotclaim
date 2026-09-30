@@ -28,13 +28,18 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 function loadSavedData() {
-  if (!fs.existsSync(DATA_FILE)) return { inviteCounts: {}, countedMembers: {} };
+  if (!fs.existsSync(DATA_FILE)) return { inviteCounts: {}, countedMembers: {}, introSent: [] };
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf-8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return {
+      inviteCounts: parsed.inviteCounts || {},
+      countedMembers: parsed.countedMembers || {},
+      introSent: parsed.introSent || []
+    };
   } catch (err) {
     console.error("Failed to read data/invites.json, initializing fresh data:", err.message);
-    return { inviteCounts: {}, countedMembers: {} };
+    return { inviteCounts: {}, countedMembers: {}, introSent: [] };
   }
 }
 
@@ -48,7 +53,18 @@ function saveData() {
     for (const [memberId, inviterId] of countedMembers.entries()) {
       membersObj[memberId] = inviterId;
     }
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj }, null, 2));
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify(
+        {
+          inviteCounts: countsObj,
+          countedMembers: membersObj,
+          introSent: Array.from(sentIntroMessage)
+        },
+        null,
+        2
+      )
+    );
   } catch (err) {
     console.error("Failed to save data to data/invites.json:", err.message);
   }
@@ -60,6 +76,7 @@ for (const [inviterId, memberArray] of Object.entries(initialData.inviteCounts |
   inviteCounts.set(inviterId, new Set(memberArray));
 }
 const countedMembers = new Map(Object.entries(initialData.countedMembers || {}));
+const sentIntroMessage = new Set(initialData.introSent || []);
 
 // ---------------------------------------------------------------------------
 // In-memory runtime state
@@ -69,7 +86,6 @@ const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
-const sentIntroMessage = new Set(); // Tracks users who already received the one-time intro
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
@@ -82,6 +98,7 @@ const TRIGGER_KEYWORDS = [
   "invites",
   "invited",
   "inv",
+  "i invite",
   "i invite 3 invites complete",
   "invites complete",
   "invite complete",
@@ -111,7 +128,7 @@ const TRIGGER_KEYWORDS = [
   "already done"
 ];
 
-const CLAIM_REGEX = /\b(invite|invites|invited|inv|have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
+const CLAIM_REGEX = /\b(invite|invites|invited|inv|have|got|did|done|made|already|check)\b/i;
 
 // Keywords for "are you human/bot" inquiries
 const HUMAN_BOT_KEYWORDS = [
@@ -351,7 +368,6 @@ async function handleJoin(member) {
 
   const accountAgeDays = (Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24);
   if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-    console.log(`Skipped counting invite for ${member.user.tag}: Account is too new (${accountAgeDays.toFixed(1)} days old).`);
     return;
   }
 
@@ -380,16 +396,10 @@ function handleLeave(member) {
 client.once("ready", async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-    if (!guild) {
-      console.error("Configured guild is not available. Exiting.");
-      process.exit(1);
-    }
+    if (!guild) process.exit(1);
 
     const channel = await guild.channels.fetch(CHECK_CHANNEL_ID).catch(() => null);
-    if (!channel || (channel.type !== "GUILD_TEXT" && !channel.isText())) {
-      console.error("Private check channel not found or invalid. Exiting.");
-      process.exit(1);
-    }
+    if (!channel) process.exit(1);
     checkChannel = channel;
 
     await refreshInviteCache(guild).catch(() => null);
@@ -408,9 +418,7 @@ client.on("inviteCreate", (invite) => {
 
 client.on("guildMemberAdd", (member) => {
   if (member.guild.id !== GUILD_ID) return;
-  joinQueue = joinQueue
-    .then(() => handleJoin(member))
-    .catch((err) => console.error("Join handling error:", err.message));
+  joinQueue = joinQueue.then(() => handleJoin(member)).catch(() => {});
 });
 
 client.on("guildMemberRemove", (member) => {
@@ -457,13 +465,13 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
+      // If it's NOT a trigger phrase, handle introduction or follow-ups strictly once
       if (!isTriggerPhrase(rawText)) {
-        // Send one-time intro message only once per user
         if (!sentIntroMessage.has(userId)) {
           sentIntroMessage.add(userId);
+          saveData();
           await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
         } else {
-          // Follow-up rotation messages for random non-trigger remarks
           const followUps = [
             "yeah go ahead, just come back when you've got the 3 invites",
             "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
@@ -479,8 +487,8 @@ client.on("messageCreate", async (message) => {
       lastCheck.set(userId, now);
 
       let stage = userConversationStage.get(userId) || 0;
-
       userConversationStage.set(userId, stage + 1);
+
       const current = getCount(userId);
       const target = nextRequired(current);
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
@@ -513,7 +521,6 @@ client.on("messageCreate", async (message) => {
 
     const content = message.content.trim();
 
-    // Admin commands
     if (content.toLowerCase().startsWith("!resetinvites")) {
       if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
@@ -541,7 +548,6 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Channel Mentions
     if (message.mentions.users.has(client.user.id)) {
       const userId = message.author.id;
 
@@ -560,6 +566,7 @@ client.on("messageCreate", async (message) => {
       if (!isTriggerPhrase(content)) {
         if (!sentIntroMessage.has(userId)) {
           sentIntroMessage.add(userId);
+          saveData();
           await sendChannelMessage(message.channel, "🎁 invite `3 people` to the server and the giftcard code is yours!");
         } else {
           const followUps = [
@@ -613,6 +620,7 @@ client.on("messageCreate", async (message) => {
 // Login
 // ---------------------------------------------------------------------------
 client.login(DISCORD_TOKEN).catch((err) => {
-  console.error("Login failed (invalid personal token?):", err.message);
+  console.error("Login failed:", err.message);
   process.exit(1);
 });
+  
