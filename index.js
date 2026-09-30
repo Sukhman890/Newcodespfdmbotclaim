@@ -3,6 +3,17 @@
 const { Client } = require("discord.js-selfbot-v13");
 
 // ---------------------------------------------------------------------------
+// Global Error Handlers (Prevents silent crashes)
+// ---------------------------------------------------------------------------
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled Promise Rejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+});
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 const { DISCORD_TOKEN, GUILD_ID, CHECK_CHANNEL_ID } = process.env;
@@ -87,7 +98,7 @@ const HUMAN_BOT_KEYWORDS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Client Initialization with Full Intents
+// Client Initialization with Safe Intents
 // ---------------------------------------------------------------------------
 const client = new Client({
   checkUpdate: false,
@@ -103,35 +114,6 @@ const client = new Client({
 // Helpers
 // ---------------------------------------------------------------------------
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Forcefully accept/clear message requests via low-level API request
-async function forceAcceptDM(clientInstance, channelId) {
-  try {
-    if (clientInstance.api) {
-      await clientInstance.api.users['@me'].channels[channelId].consent.post({
-        data: { consent_status: 1 }
-      });
-    }
-  } catch (err) {
-    // Fallback wrapper if available
-    try {
-      const channel = clientInstance.channels.cache.get(channelId);
-      if (channel && typeof channel.accept === "function") {
-        await channel.accept();
-      }
-    } catch (_) {}
-  }
-}
-
-async function acceptAllPendingDMs() {
-  try {
-    for (const channel of client.channels.cache.values()) {
-      if (channel.type === "DM" || channel.type === "GROUP_DM") {
-        await forceAcceptDM(client, channel.id);
-      }
-    }
-  } catch (err) {}
-}
 
 async function getRealInviteCount(guild, userId) {
   try {
@@ -162,6 +144,7 @@ async function sendDM(user, text) {
     await user.send(text);
     return true;
   } catch (err) {
+    console.error("Failed to send DM:", err.message);
     return false;
   }
 }
@@ -174,6 +157,7 @@ async function sendSeparateDMs(user, text1, text2) {
     await user.send(text2);
     return true;
   } catch (err) {
+    console.error("Failed to send separate DMs:", err.message);
     return false;
   }
 }
@@ -184,6 +168,7 @@ async function sendChannelMessage(channel, text) {
     await channel.send(text);
     return true;
   } catch (err) {
+    console.error("Failed to send channel message:", err.message);
     return false;
   }
 }
@@ -196,6 +181,7 @@ async function sendSeparateChannelMessages(channel, text1, text2) {
     await channel.send(text2);
     return true;
   } catch (err) {
+    console.error("Failed to send separate channel messages:", err.message);
     return false;
   }
 }
@@ -238,7 +224,7 @@ function isLegitimacyInquiry(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Response Formatters (Cartel Style Integration)
+// Response Formatters
 // ---------------------------------------------------------------------------
 function getPreCheckingText(stage) {
   const variations = [
@@ -321,11 +307,7 @@ client.once("ready", async () => {
     }
     checkChannel = channel;
 
-    // Sweep and clear pending requests immediately on boot
-    await acceptAllPendingDMs();
-    setInterval(acceptAllPendingDMs, 20_000);
-
-    console.log(`Account connected as ${client.user.tag}`);
+    console.log(`Account connected successfully as ${client.user.tag}`);
   } catch (err) {
     console.error("Startup failed:", err.message);
     process.exit(1);
@@ -338,8 +320,10 @@ client.on("messageCreate", async (message) => {
 
     // Direct Messages (DMs)
     if (!message.guild) {
-      // Forcefully clear the message request / consent block immediately
-      await forceAcceptDM(client, message.channel.id);
+      // Automatically accept message requests if the function exists
+      if (typeof message.channel.accept === "function") {
+        await message.channel.accept().catch(() => {});
+      }
 
       const userId = message.author.id;
       const rawText = message.content.trim();
@@ -470,4 +454,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-                                            
+  
