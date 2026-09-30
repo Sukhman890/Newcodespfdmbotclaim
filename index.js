@@ -262,7 +262,6 @@ client.once("ready", async () => {
 
     const channel = await guild.channels.fetch(CHECK_CHANNEL_ID).catch(() => null);
     
-    // Fixed compatibility for channel type check
     if (!channel || (channel.type !== "GUILD_TEXT" && !channel.isText())) {
       console.error("Private check channel not found or not a text channel. Exiting.");
       process.exit(1);
@@ -301,13 +300,20 @@ client.on("messageCreate", async (message) => {
     const content = message.content.trim();
 
     // -----------------------------------------------------------------------
-    // Direct Messages (DMs)
+    // Direct Messages (DMs) & Message Requests
     // -----------------------------------------------------------------------
     if (!message.guild) {
+      // 1. Accept message request explicitly if supported
+      if (typeof message.channel.accept === "function") {
+        await message.channel.accept().catch(() => null);
+      }
+
+      // 2. Cooldown check
       const now = Date.now();
       if (now - (lastCheck.get(message.author.id) || 0) < CHECK_COOLDOWN_MS) return;
       lastCheck.set(message.author.id, now);
 
+      // 3. Process invite check & send message
       await runCheck(message, buildMentionDM);
       return;
     }
@@ -367,4 +373,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-                                            
+        
