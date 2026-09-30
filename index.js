@@ -24,11 +24,13 @@ const countedMembers = new Map();
 const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
+const humanInquiryCount = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
+const RESPONSE_DELAY_MS = 5_000; // 5-second human-like delay
 let checkChannel = null;
 
-// Keywords that trigger an invite check
+// Trigger keywords for invite checking
 const TRIGGER_KEYWORDS = [
   "done",
   "completed",
@@ -57,6 +59,26 @@ const TRIGGER_KEYWORDS = [
 
 const CLAIM_REGEX = /\b(have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
 
+// Keywords for "are you human/bot" inquiries
+const HUMAN_BOT_KEYWORDS = [
+  "are you bot",
+  "are u bot",
+  "r u bot",
+  "u bot",
+  "you bot",
+  "are you a bot",
+  "are u a bot",
+  "r u a bot",
+  "are you human",
+  "are u human",
+  "r u human",
+  "is this a bot",
+  "is this bot",
+  "real person",
+  "real human",
+  "ai bot"
+];
+
 // ---------------------------------------------------------------------------
 // Client Initialization
 // ---------------------------------------------------------------------------
@@ -65,6 +87,8 @@ const client = new Client({ checkUpdate: false });
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function getCount(userId) {
   const set = inviteCounts.get(userId);
   return set ? set.size : 0;
@@ -87,7 +111,18 @@ function snapshot(inv) {
 
 async function sendDM(user, text) {
   try {
+    await delay(RESPONSE_DELAY_MS);
     await user.send(text);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+async function sendChannelMessage(channel, text) {
+  try {
+    await delay(RESPONSE_DELAY_MS);
+    await channel.send(text);
     return true;
   } catch (err) {
     return false;
@@ -115,8 +150,13 @@ function isAlreadyPhrase(text) {
   return lower.includes("already") || lower.includes("already my invites") || lower.includes("i have already");
 }
 
+function isHumanBotInquiry(text) {
+  const lower = text.toLowerCase().trim();
+  return HUMAN_BOT_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 // ---------------------------------------------------------------------------
-// Dynamic Response Formatters
+// Dynamic Response Formatters (Matching Image Format)
 // ---------------------------------------------------------------------------
 function getPreCheckingText(stage) {
   const variations = [
@@ -133,8 +173,8 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
 
   if (target === 3) {
     const texts = [
-      `ur at ${current} rn, get ${remaining} more and ur good`,
       `u only got ${current} rn bro, need ${target} to unlock — almost there`,
+      `ur at ${current} rn, get ${remaining} more and ur good`,
       `showing ${current} invite(s) lol, just need ${remaining} more`
     ];
     mainText = texts[stage % texts.length];
@@ -147,7 +187,6 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
     mainText = texts[stage % texts.length];
   }
 
-  // If user said "already invited/have invites", append completion prompt
   if (wasAlreadyClaim) {
     mainText += `\n\ncomplete fast and hit me when it's done, type "done" when you have the invites!`;
   }
@@ -293,7 +332,20 @@ client.on("messageCreate", async (message) => {
       const rawText = message.content.trim();
       const lowerText = rawText.toLowerCase();
 
-      // Scam/legit proof detection
+      // Check for human/bot questions
+      if (isHumanBotInquiry(rawText)) {
+        const askCount = humanInquiryCount.get(userId) || 0;
+        humanInquiryCount.set(userId, askCount + 1);
+
+        if (askCount === 0) {
+          await sendDM(message.author, "lmao bro im real i just got like 50 dms rn 😭");
+        } else {
+          await sendDM(message.author, "bruh im real just type fast bc i got a lot of dms");
+        }
+        return;
+      }
+
+      // Scam/proof detection
       if (
         lowerText.includes("fake") ||
         lowerText.includes("legit") ||
@@ -313,33 +365,24 @@ client.on("messageCreate", async (message) => {
 
       let stage = userConversationStage.get(userId) || 0;
 
-      // Stage 0: Initial interaction
-      if (stage === 0) {
-        await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
-        userConversationStage.set(userId, 1);
-        return;
-      }
-
-      // Stage 1: Second interaction
-      if (stage === 1 && !isTriggerPhrase(rawText)) {
-        await sendDM(message.author, "yeah go ahead, just come back when you've got the 3 invites");
-        userConversationStage.set(userId, 2);
-        return;
-      }
-
-      // Stage 2: Third interaction
-      if (stage === 2 && !isTriggerPhrase(rawText)) {
-        await sendDM(message.author, "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in");
-        userConversationStage.set(userId, 3);
-        return;
-      }
-
-      // Check if message relates to claiming/invites/counts
+      // Unrelated Messages Flow
       if (!isTriggerPhrase(rawText)) {
+        if (stage === 0) {
+          await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+          userConversationStage.set(userId, 1);
+        } else if (stage === 1) {
+          await sendDM(message.author, "yeah go ahead, just come back when you've got the 3 invites");
+          userConversationStage.set(userId, 2);
+        } else {
+          await sendDM(
+            message.author,
+            "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in. you will get rewards do invites fast I'm waiting for you"
+          );
+        }
         return;
       }
 
-      // Run Invite Check Flow
+      // Trigger Phrase / Invite Check Flow
       userConversationStage.set(userId, stage + 1);
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -348,28 +391,27 @@ client.on("messageCreate", async (message) => {
 
       await logCheck(userId);
 
-      // Pre-checking message
+      // Pre-checking message & result as seen in image
       const preText = getPreCheckingText(stage);
-      await sendDM(message.author, preText);
+      const wasAlready = isAlreadyPhrase(rawText);
+      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
 
       // Milestone 1 (3 Invites)
       if (current >= 3 && !flags.first) {
         flags.first = true;
-        await sendDM(message.author, MILESTONE_3_MESSAGE);
+        await sendDM(message.author, `${preText}\n\n${MILESTONE_3_MESSAGE}`);
         return;
       }
 
       // Milestone 2 (8 Invites)
       if (current >= 8 && !flags.eight) {
         flags.eight = true;
-        await sendDM(message.author, MILESTONE_8_MESSAGE);
+        await sendDM(message.author, `${preText}\n\n${MILESTONE_8_MESSAGE}`);
         return;
       }
 
-      // Under-target status message
-      const wasAlready = isAlreadyPhrase(rawText);
-      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
-      await sendDM(message.author, progressMsg);
+      // Send formatted checking message (as seen in image)
+      await sendDM(message.author, `${preText}\n${progressMsg}`);
       return;
     }
 
@@ -391,6 +433,7 @@ client.on("messageCreate", async (message) => {
       inviteCounts.delete(target.id);
       sentMilestones.delete(target.id);
       userConversationStage.delete(target.id);
+      humanInquiryCount.delete(target.id);
 
       await logToCheckChannel(
         `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
@@ -402,11 +445,23 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Account mention check
+    // Channel Mentions Trigger (Matches Image Output)
     if (message.mentions.users.has(client.user.id)) {
-      if (!isTriggerPhrase(content)) return;
-
       const userId = message.author.id;
+
+      // Check human/bot inquiry via channel mention
+      if (isHumanBotInquiry(content)) {
+        const askCount = humanInquiryCount.get(userId) || 0;
+        humanInquiryCount.set(userId, askCount + 1);
+
+        if (askCount === 0) {
+          await sendChannelMessage(message.channel, "lmao bro im real i just got like 50 dms rn 😭");
+        } else {
+          await sendChannelMessage(message.channel, "bruh im real just type fast bc i got a lot of dms");
+        }
+        return;
+      }
+
       const now = Date.now();
       if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
       lastCheck.set(userId, now);
@@ -421,28 +476,26 @@ client.on("messageCreate", async (message) => {
 
       await logCheck(userId);
 
-      // Pre-checking text
       const preText = getPreCheckingText(stage);
-      await message.channel.send(preText);
+      const wasAlready = isAlreadyPhrase(content);
+      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
 
       // Milestone 1 (3 Invites)
       if (current >= 3 && !flags.first) {
         flags.first = true;
-        await sendDM(message.author, MILESTONE_3_MESSAGE);
+        await sendChannelMessage(message.channel, `${preText}\n\n${MILESTONE_3_MESSAGE}`);
         return;
       }
 
       // Milestone 2 (8 Invites)
       if (current >= 8 && !flags.eight) {
         flags.eight = true;
-        await sendDM(message.author, MILESTONE_8_MESSAGE);
+        await sendChannelMessage(message.channel, `${preText}\n\n${MILESTONE_8_MESSAGE}`);
         return;
       }
 
-      // Under-target status phrase
-      const wasAlready = isAlreadyPhrase(content);
-      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
-      await message.channel.send(progressMsg);
+      // Output matching the provided screenshot
+      await sendChannelMessage(message.channel, `${preText}\n${progressMsg}`);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -456,3 +509,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
+  
