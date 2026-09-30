@@ -1,8 +1,6 @@
 "use strict";
 
 const { Client } = require("discord.js-selfbot-v13");
-const fs = require("fs");
-const path = require("path");
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -18,74 +16,13 @@ if (missing.length) {
 }
 
 // ---------------------------------------------------------------------------
-// Folder Persistence Setup (Saves to ./data/invites.json)
-// ---------------------------------------------------------------------------
-const DATA_DIR = path.join(__dirname, "data");
-const DATA_FILE = path.join(DATA_DIR, "invites.json");
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-function loadSavedData() {
-  if (!fs.existsSync(DATA_FILE)) return { inviteCounts: {}, countedMembers: {}, introSent: [] };
-  try {
-    const raw = fs.readFileSync(DATA_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    return {
-      inviteCounts: parsed.inviteCounts || {},
-      countedMembers: parsed.countedMembers || {},
-      introSent: parsed.introSent || []
-    };
-  } catch (err) {
-    console.error("Failed to read data/invites.json, initializing fresh data:", err.message);
-    return { inviteCounts: {}, countedMembers: {}, introSent: [] };
-  }
-}
-
-function saveData() {
-  try {
-    const countsObj = {};
-    for (const [inviterId, memberSet] of inviteCounts.entries()) {
-      countsObj[inviterId] = Array.from(memberSet);
-    }
-    const membersObj = {};
-    for (const [memberId, inviterId] of countedMembers.entries()) {
-      membersObj[memberId] = inviterId;
-    }
-    fs.writeFileSync(
-      DATA_FILE,
-      JSON.stringify(
-        {
-          inviteCounts: countsObj,
-          countedMembers: membersObj,
-          introSent: Array.from(sentIntroMessage)
-        },
-        null,
-        2
-      )
-    );
-  } catch (err) {
-    console.error("Failed to save data to data/invites.json:", err.message);
-  }
-}
-
-const initialData = loadSavedData();
-const inviteCounts = new Map();
-for (const [inviterId, memberArray] of Object.entries(initialData.inviteCounts || {})) {
-  inviteCounts.set(inviterId, new Set(memberArray));
-}
-const countedMembers = new Map(Object.entries(initialData.countedMembers || {}));
-const sentIntroMessage = new Set(initialData.introSent || []);
-
-// ---------------------------------------------------------------------------
 // In-memory runtime state
 // ---------------------------------------------------------------------------
-let inviteCache = new Map();
-const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
+const sentIntroMessage = new Set();
+const sentMilestones = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
@@ -161,24 +98,28 @@ const client = new Client({ checkUpdate: false });
 // ---------------------------------------------------------------------------
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function getCount(userId) {
-  const set = inviteCounts.get(userId);
-  return set ? set.size : 0;
+// Real-time dynamic count checker directly querying Discord's server invite cache/API
+async function getRealInviteCount(guild, userId) {
+  try {
+    const invites = await guild.invites.fetch();
+    let totalUses = 0;
+
+    for (const invite of invites.values()) {
+      if (invite.inviter && invite.inviter.id === userId) {
+        totalUses += invite.uses || 0;
+      }
+    }
+    return totalUses;
+  } catch (err) {
+    console.error("Failed to fetch guild invites:", err.message);
+    return 0;
+  }
 }
 
 function nextRequired(count) {
   if (count < 3) return 3;
   if (count < 8) return 8;
   return 8 + 3 * (Math.floor((count - 8) / 3) + 1);
-}
-
-function snapshot(inv) {
-  return {
-    code: inv.code,
-    uses: inv.uses ?? 0,
-    maxUses: inv.maxUses ?? 0,
-    inviterId: inv.inviter?.id ?? null,
-  };
 }
 
 async function sendDM(user, text) {
@@ -293,7 +234,7 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
 const MILESTONE_3_MESSAGE =
   "-# 🧑‍🌾 Thanks for INVITING! I appreciate you for giving your time.\n\n" +
   "💫 Either wait `2 weeks` to claim or get **__5 EXTRA INVITES__** to the server for an **INSTANT CLAIM**. ⚡\n\n" +
-  "> ❤️️ - We have this system to prevent people from abusing our systems because it has happened several times.";
+  "> ❤️ - We have this system to prevent people from abusing our systems because it has happened several times.";
 
 const MILESTONE_8_MESSAGE =
   "👋 hey, sorry for the delay!\n" +
@@ -301,94 +242,17 @@ const MILESTONE_8_MESSAGE =
   "you're so close to getting the reward. we only have a few left in stock but i saved one just for u! before i send it tho, could u invite **3 more people** to the server? ❄️\n" +
   "i wanna be fair, but with so many ppl messaging me, im giving it to whoever does this extra step! once ur done, dm me back and i'll send it immediately, no waiting!";
 
-async function logCheck(userId) {
-  const current = getCount(userId);
-  const next = nextRequired(current);
-  const remaining = Math.max(0, next - current);
+async function logCheck(userId, current) {
+  const target = nextRequired(current);
+  const remaining = Math.max(0, target - current);
   await logToCheckChannel(
     `🔎 Invite Check\n` +
       `User: <@${userId}>\n` +
       `User ID: ${userId}\n` +
       `Current valid invites: ${current}\n` +
-      `Next milestone: ${next}\n` +
+      `Next milestone: ${target}\n` +
       `Remaining: ${remaining}`
   );
-}
-
-// ---------------------------------------------------------------------------
-// Invite Detection & Syncing
-// ---------------------------------------------------------------------------
-async function refreshInviteCache(guild) {
-  const fresh = await guild.invites.fetch();
-  const map = new Map();
-  for (const inv of fresh.values()) map.set(inv.code, snapshot(inv));
-  inviteCache = map;
-}
-
-async function detectUsedInvite(guild) {
-  let fresh;
-  try {
-    fresh = await guild.invites.fetch();
-  } catch (err) {
-    console.error("Invite fetch failed (Needs Manage Server permission):", err.message);
-    return null;
-  }
-
-  const freshMap = new Map();
-  for (const inv of fresh.values()) freshMap.set(inv.code, snapshot(inv));
-
-  const increased = [];
-  for (const [code, snap] of freshMap) {
-    const old = inviteCache.get(code);
-    if (old ? snap.uses > old.uses : snap.uses > 0) increased.push(snap);
-  }
-
-  let used = null;
-  if (increased.length === 1) {
-    used = increased[0];
-  } else if (increased.length === 0) {
-    const vanished = [];
-    for (const [code, old] of inviteCache) {
-      if (!freshMap.has(code) && old.maxUses > 0 && old.uses + 1 >= old.maxUses) {
-        vanished.push(old);
-      }
-    }
-    if (vanished.length === 1) used = vanished[0];
-  }
-
-  inviteCache = freshMap;
-  return used;
-}
-
-let joinQueue = Promise.resolve();
-
-async function handleJoin(member) {
-  const used = await detectUsedInvite(member.guild);
-
-  if (member.user.bot || !used || !used.inviterId) return;
-
-  const accountAgeDays = (Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24);
-  if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-    return;
-  }
-
-  const inviterId = used.inviterId;
-  if (inviterId === client.user.id || inviterId === member.id || countedMembers.has(member.id)) return;
-
-  countedMembers.set(member.id, inviterId);
-  if (!inviteCounts.has(inviterId)) inviteCounts.set(inviterId, new Set());
-  inviteCounts.get(inviterId).add(member.id);
-
-  saveData();
-}
-
-function handleLeave(member) {
-  const inviterId = countedMembers.get(member.id);
-  if (inviterId && inviteCounts.has(inviterId)) {
-    inviteCounts.get(inviterId).delete(member.id);
-    countedMembers.delete(member.id);
-    saveData();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -410,28 +274,11 @@ client.once("ready", async () => {
     }
     checkChannel = channel;
 
-    await refreshInviteCache(guild).catch(() => null);
     console.log(`Account connected as ${client.user.tag}`);
   } catch (err) {
     console.error("Startup failed:", err.message);
     process.exit(1);
   }
-});
-
-client.on("inviteCreate", (invite) => {
-  if (invite.guild && invite.guild.id === GUILD_ID) {
-    inviteCache.set(invite.code, snapshot(invite));
-  }
-});
-
-client.on("guildMemberAdd", (member) => {
-  if (member.guild.id !== GUILD_ID) return;
-  joinQueue = joinQueue.then(() => handleJoin(member)).catch(() => {});
-});
-
-client.on("guildMemberRemove", (member) => {
-  if (member.guild.id !== GUILD_ID) return;
-  handleLeave(member);
 });
 
 client.on("messageCreate", async (message) => {
@@ -487,7 +334,6 @@ client.on("messageCreate", async (message) => {
       if (!isTriggerPhrase(rawText)) {
         if (!sentIntroMessage.has(userId)) {
           sentIntroMessage.add(userId);
-          saveData();
           await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
         } else {
           const followUps = [
@@ -507,12 +353,13 @@ client.on("messageCreate", async (message) => {
       let stage = userConversationStage.get(userId) || 0;
       userConversationStage.set(userId, stage + 1);
 
-      const current = getCount(userId);
+      // Fetch dynamic active count directly from Discord
+      const current = await getRealInviteCount(targetGuild, userId);
       const target = nextRequired(current);
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
       sentMilestones.set(userId, flags);
 
-      await logCheck(userId);
+      await logCheck(userId, current);
 
       const preText = getPreCheckingText(stage);
       const wasAlready = isAlreadyPhrase(rawText);
@@ -534,37 +381,10 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Server Channels - Enforce matching target GUILD_ID exactly
+    // Server Channels
     if (message.guild.id !== GUILD_ID) return;
 
     const content = message.content.trim();
-
-    if (content.toLowerCase().startsWith("!resetinvites")) {
-      if (!message.member?.permissions.has("ADMINISTRATOR")) return;
-
-      const target = message.mentions.users.first();
-      if (!target) {
-        await message.reply("Usage: `!resetinvites @user`");
-        return;
-      }
-
-      inviteCounts.delete(target.id);
-      sentMilestones.delete(target.id);
-      userConversationStage.delete(target.id);
-      humanInquiryCount.delete(target.id);
-      sentIntroMessage.delete(target.id);
-
-      saveData();
-
-      await logToCheckChannel(
-        `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
-      );
-      await message.reply({
-        content: `Reset tracked invites for <@${target.id}>.`,
-        allowedMentions: { parse: [] },
-      });
-      return;
-    }
 
     if (message.mentions.users.has(client.user.id)) {
       const userId = message.author.id;
@@ -584,7 +404,6 @@ client.on("messageCreate", async (message) => {
       if (!isTriggerPhrase(content)) {
         if (!sentIntroMessage.has(userId)) {
           sentIntroMessage.add(userId);
-          saveData();
           await sendChannelMessage(message.channel, "🎁 invite `3 people` to the server and the giftcard code is yours!");
         } else {
           const followUps = [
@@ -604,12 +423,13 @@ client.on("messageCreate", async (message) => {
       let stage = userConversationStage.get(userId) || 0;
       userConversationStage.set(userId, stage + 1);
 
-      const current = getCount(userId);
+      // Fetch dynamic active count directly from Discord
+      const current = await getRealInviteCount(targetGuild, userId);
       const target = nextRequired(current);
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
       sentMilestones.set(userId, flags);
 
-      await logCheck(userId);
+      await logCheck(userId, current);
 
       const preText = getPreCheckingText(stage);
       const wasAlready = isAlreadyPhrase(content);
@@ -641,4 +461,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-                  
+        
