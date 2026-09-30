@@ -30,7 +30,7 @@ const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
 let checkChannel = null;
 
-// Trigger keywords for invite checking (Triggers on ANY invite related word/message)
+// Trigger keywords for invite checking
 const TRIGGER_KEYWORDS = [
   "invite",
   "invites",
@@ -391,30 +391,19 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
+      // If message is unrelated to triggers, reply with the instruction
+      if (!isTriggerPhrase(rawText)) {
+        await sendDM(message.author, "complete invites then msg me in done or mention me");
+        return;
+      }
+
       const now = Date.now();
       if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
       lastCheck.set(userId, now);
 
       let stage = userConversationStage.get(userId) || 0;
 
-      // Unrelated Messages Flow
-      if (!isTriggerPhrase(rawText)) {
-        if (stage === 0) {
-          await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
-          userConversationStage.set(userId, 1);
-        } else if (stage === 1) {
-          await sendDM(message.author, "yeah go ahead, just come back when you've got the 3 invites");
-          userConversationStage.set(userId, 2);
-        } else {
-          await sendDM(
-            message.author,
-            "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in. you will get rewards do invites fast I'm waiting for you"
-          );
-        }
-        return;
-      }
-
-      // Invite Check Flow (Triggered on any invite message)
+      // Invite Check Flow
       userConversationStage.set(userId, stage + 1);
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -490,6 +479,11 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
+      if (!isTriggerPhrase(content)) {
+        await sendChannelMessage(message.channel, "complete invites then msg me in done or mention me");
+        return;
+      }
+
       const now = Date.now();
       if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
       lastCheck.set(userId, now);
@@ -535,4 +529,3 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-    
