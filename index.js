@@ -1,14 +1,13 @@
 "use strict";
 
-// Swapped to selfbot library to support personal account tokens
 const { Client } = require("discord.js-selfbot-v13");
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-const { DISCORD_TOKEN, GUILD_ID, FALCON_ID, CHECK_CHANNEL_ID } = process.env;
+const { DISCORD_TOKEN, GUILD_ID, CHECK_CHANNEL_ID } = process.env;
 
-const missing = ["DISCORD_TOKEN", "GUILD_ID", "FALCON_ID", "CHECK_CHANNEL_ID"].filter(
+const missing = ["DISCORD_TOKEN", "GUILD_ID", "CHECK_CHANNEL_ID"].filter(
   (k) => !process.env[k] || !process.env[k].trim()
 );
 if (missing.length) {
@@ -24,16 +23,15 @@ const inviteCounts = new Map();
 const countedMembers = new Map();
 const sentMilestones = new Map();
 const lastCheck = new Map();
+const userConversationStage = new Map(); // Tracks dynamic chat stages per user
 
-const CHECK_COOLDOWN_MS = 10_000;
+const CHECK_COOLDOWN_MS = 5_000;
 let checkChannel = null;
 
 // ---------------------------------------------------------------------------
-// Client Initialization (No Intents for User Accounts)
+// Client Initialization
 // ---------------------------------------------------------------------------
-const client = new Client({
-  checkUpdate: false,
-});
+const client = new Client({ checkUpdate: false });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,17 +45,6 @@ function nextRequired(count) {
   if (count < 3) return 3;
   if (count < 8) return 8;
   return 8 + 3 * (Math.floor((count - 8) / 3) + 1);
-}
-
-function isMilestone(count) {
-  return count === 3 || (count >= 8 && (count - 8) % 3 === 0);
-}
-
-function getStatus(userId) {
-  const current = getCount(userId);
-  const next = nextRequired(current);
-  const remaining = Math.max(0, next - current);
-  return { current, next, remaining };
 }
 
 function snapshot(inv) {
@@ -87,56 +74,61 @@ async function logToCheckChannel(text) {
   }
 }
 
-function buildMentionDM(userId) {
-  const { current, next, remaining } = getStatus(userId);
-  let line;
-  if (current === 3) {
-    line = `showing 3 invite(s) — first step complete.`;
-  } else if (current >= 8 && isMilestone(current)) {
-    line = `showing ${current} invite(s) — milestone reached.`;
-  } else if (remaining === 1) {
-    line = `showing ${current} invite(s), get to ${next} and ur good`;
-  } else if (current > 0 && current < 3) {
-    line = `showing ${current} invite(s) lol, just need ${remaining} more`;
-  } else if (current === 0) {
-    line = `showing 0 invite(s), need ${remaining} to get started`;
-  } else {
-    line = `showing ${current} invite(s), just need ${remaining} more`;
-  }
-  return `checking rq...\n\n${line}`;
+// ---------------------------------------------------------------------------
+// Dynamic Response Formatters matching Cherpl Flow
+// ---------------------------------------------------------------------------
+function getPreCheckingText(stage) {
+  const variations = [
+    "sec, checking ur invites on the bot...",
+    "one sec lemme check...",
+    "checking rq..."
+  ];
+  return variations[stage % variations.length];
 }
 
-function buildInvitesCommandDM(userId) {
-  const { current, next, remaining } = getStatus(userId);
-  return (
-    `📊 Invite Check\n\n` +
-    `You currently have: ${current} valid invites\n` +
-    `🎯 Next milestone: ${next}\n` +
-    `👥 Remaining: ${remaining}`
-  );
+function getUnderTargetText(current, target, stage) {
+  const remaining = Math.max(0, target - current);
+  
+  if (target === 3) {
+    const texts = [
+      `ur at ${current} rn, get ${remaining} more and ur good`,
+      `u only got ${current} rn bro, need ${target} to unlock — almost there`,
+      `showing ${current} invite(s) lol, just need ${remaining} more`
+    ];
+    return texts[stage % texts.length];
+  } else {
+    const texts = [
+      `checked and u got ${current}, need ${target} to reserve ur prize. almost there bro`,
+      `showing ${current} rn lol, get to ${target} and i lock ur payout in`,
+      `showing ${current} rn lol, get to ${target} and i lock ur payout in`
+    ];
+    return texts[stage % texts.length];
+  }
 }
 
 const MILESTONE_3_MESSAGE =
-  "# 🧑‍🌾 Thanks for INVITING! I appreciate you for giving your time.\n\n" +
-  "💫 Either wait `2 weeks` to claim or get **5 EXTRA INVITES** to the server for an **INSTANT CLAIM.** ⚡\n\n" +
+  "-# 🧑‍🌾 Thanks for INVITING! I appreciate you for giving your time.\n\n" +
+  "💫 Either wait `2 weeks` to claim or get **__5 EXTRA INVITES__** to the server for an **INSTANT CLAIM**. ⚡\n\n" +
   "> ❤️ - We have this system to prevent people from abusing our systems because it has happened several times.";
 
 const MILESTONE_8_MESSAGE =
   "👋 hey, sorry for the delay!\n" +
-  "just checked ur invites on the bot and everything looks good! great job\n\n" +
-  "you're so close to getting the reward. before i send it tho, could u invite **3 more people** to the server? ❄️\n\n" +
+  "just checked ur invites on the bot and everything looks good! great job\n" +
+  "you're so close to getting the reward. we only have a few left in stock but i saved one just for u! before i send it tho, could u invite **3 more people** to the server? ❄️\n" +
   "i wanna be fair, but with so many ppl messaging me, im giving it to whoever does this extra step! once ur done, dm me back and i'll send it immediately, no waiting!";
 
-async function maybeSendMilestones(user, count) {
-  const flags = sentMilestones.get(user.id) || { first: false, eight: false };
-  sentMilestones.set(user.id, flags);
-
-  if (count >= 3 && !flags.first) {
-    if (await sendDM(user, MILESTONE_3_MESSAGE)) flags.first = true;
-  }
-  if (count >= 8 && !flags.eight) {
-    if (await sendDM(user, MILESTONE_8_MESSAGE)) flags.eight = true;
-  }
+async function logCheck(userId) {
+  const current = getCount(userId);
+  const next = nextRequired(current);
+  const remaining = Math.max(0, next - current);
+  await logToCheckChannel(
+    `🔎 Invite Check\n` +
+      `User: <@${userId}>\n` +
+      `User ID: ${userId}\n` +
+      `Current valid invites: ${current}\n` +
+      `Next milestone: ${next}\n` +
+      `Remaining: ${remaining}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +146,7 @@ async function detectUsedInvite(guild) {
   try {
     fresh = await guild.invites.fetch();
   } catch (err) {
-    console.error("Invite fetch failed (Account needs 'Manage Server' permission):", err.message);
+    console.error("Invite fetch failed (Needs Manage Server permission):", err.message);
     return null;
   }
 
@@ -189,64 +181,14 @@ let joinQueue = Promise.resolve();
 async function handleJoin(member) {
   const used = await detectUsedInvite(member.guild);
 
-  if (member.user.bot) return;
-  if (!used || !used.inviterId) return;
+  if (member.user.bot || !used || !used.inviterId) return;
 
   const inviterId = used.inviterId;
-  if (inviterId === client.user.id) return;
-  if (inviterId === member.id) return;
-  if (countedMembers.has(member.id)) return;
+  if (inviterId === client.user.id || inviterId === member.id || countedMembers.has(member.id)) return;
 
   countedMembers.set(member.id, inviterId);
   if (!inviteCounts.has(inviterId)) inviteCounts.set(inviterId, new Set());
   inviteCounts.get(inviterId).add(member.id);
-
-  const count = getCount(inviterId);
-
-  if (count === 3 || count === 8) {
-    try {
-      const inviter = await client.users.fetch(inviterId);
-      if (inviter.bot) return;
-      await maybeSendMilestones(inviter, count);
-    } catch (err) {
-      console.error("Milestone delivery failed:", err.message);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Invite check flow
-// ---------------------------------------------------------------------------
-async function logCheck(userId) {
-  const { current, next, remaining } = getStatus(userId);
-  await logToCheckChannel(
-    `🔎 Invite Check\n` +
-      `User: <@${userId}>\n` +
-      `User ID: ${userId}\n` +
-      `Current valid invites: ${current}\n` +
-      `Next milestone: ${next}\n` +
-      `Remaining: ${remaining}`
-  );
-}
-
-async function runCheck(message, dmText) {
-  const user = message.author;
-
-  await logCheck(user.id);
-
-  const delivered = await sendDM(user, dmText(user.id));
-  if (!delivered) {
-    try {
-      await message.channel.send(
-        "I couldn't DM you — please enable DMs from this server and mention me again."
-      );
-    } catch (err) {
-      console.error("Could not send DM-failure notice:", err.message);
-    }
-    return;
-  }
-
-  await maybeSendMilestones(user, getCount(user.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -256,24 +198,18 @@ client.once("ready", async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
     if (!guild) {
-      console.error("Configured guild is not available to the account. Exiting.");
+      console.error("Configured guild is not available. Exiting.");
       process.exit(1);
     }
 
     const channel = await guild.channels.fetch(CHECK_CHANNEL_ID).catch(() => null);
-    
     if (!channel || (channel.type !== "GUILD_TEXT" && !channel.isText())) {
-      console.error("Private check channel not found or not a text channel. Exiting.");
+      console.error("Private check channel not found or invalid. Exiting.");
       process.exit(1);
     }
     checkChannel = channel;
 
-    try {
-      await refreshInviteCache(guild);
-    } catch (err) {
-      console.error("Initial invite fetch failed (Manage Server permission needed):", err.message);
-    }
-
+    await refreshInviteCache(guild).catch(() => null);
     console.log(`Account connected as ${client.user.tag}`);
   } catch (err) {
     console.error("Startup failed:", err.message);
@@ -282,8 +218,9 @@ client.once("ready", async () => {
 });
 
 client.on("inviteCreate", (invite) => {
-  if (!invite.guild || invite.guild.id !== GUILD_ID) return;
-  inviteCache.set(invite.code, snapshot(invite));
+  if (invite.guild && invite.guild.id === GUILD_ID) {
+    inviteCache.set(invite.code, snapshot(invite));
+  }
 });
 
 client.on("guildMemberAdd", (member) => {
@@ -297,33 +234,91 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
 
-    const content = message.content.trim();
-
-    // -----------------------------------------------------------------------
-    // Direct Messages (DMs) & Message Requests
-    // -----------------------------------------------------------------------
+    // Direct Messages (DMs)
     if (!message.guild) {
-      // 1. Accept message request explicitly if supported
       if (typeof message.channel.accept === "function") {
         await message.channel.accept().catch(() => null);
       }
 
-      // 2. Cooldown check
-      const now = Date.now();
-      if (now - (lastCheck.get(message.author.id) || 0) < CHECK_COOLDOWN_MS) return;
-      lastCheck.set(message.author.id, now);
+      const userId = message.author.id;
+      const lowerText = message.content.toLowerCase().trim();
 
-      // 3. Process invite check & send message
-      await runCheck(message, buildMentionDM);
+      // Check fake/legit proof detection
+      if (
+        lowerText.includes("fake") ||
+        lowerText.includes("legit") ||
+        lowerText.includes("proof") ||
+        lowerText.includes("scam")
+      ) {
+        await sendDM(
+          message.author,
+          "ngl https://discord.com/channels/1268246037844201483/1496153079060365322, tons of people already got paid"
+        );
+        return;
+      }
+
+      const now = Date.now();
+      if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
+      lastCheck.set(userId, now);
+
+      let stage = userConversationStage.get(userId) || 0;
+
+      // Initial Conversational Warmup Sequence
+      if (stage === 0) {
+        await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+        userConversationStage.set(userId, 1);
+        return;
+      }
+
+      if (stage === 1) {
+        await sendDM(message.author, "yeah go ahead, just come back when you've got the 3 invites");
+        userConversationStage.set(userId, 2);
+        return;
+      }
+
+      if (stage === 2 && !lowerText.includes("done") && !lowerText.includes("invite") && !lowerText.includes("check")) {
+        await sendDM(message.author, "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in");
+        userConversationStage.set(userId, 3);
+        return;
+      }
+
+      // Check Invites Logic & Milestone handling
+      userConversationStage.set(userId, stage + 1);
+      const current = getCount(userId);
+      const target = nextRequired(current);
+      const flags = sentMilestones.get(userId) || { first: false, eight: false };
+      sentMilestones.set(userId, flags);
+
+      await logCheck(userId);
+
+      // Send the pre-checking status phrase
+      const preText = getPreCheckingText(stage);
+      await sendDM(message.author, preText);
+
+      // Milestone 1 (3 Invites)
+      if (current >= 3 && !flags.first) {
+        flags.first = true;
+        await sendDM(message.author, MILESTONE_3_MESSAGE);
+        return;
+      }
+
+      // Milestone 2 (8 Invites)
+      if (current >= 8 && !flags.eight) {
+        flags.eight = true;
+        await sendDM(message.author, MILESTONE_8_MESSAGE);
+        return;
+      }
+
+      // Progress Check Response if under required milestone target
+      const progressMsg = getUnderTargetText(current, target, stage);
+      await sendDM(message.author, progressMsg);
       return;
     }
 
-    // -----------------------------------------------------------------------
-    // Server Channels
-    // -----------------------------------------------------------------------
+    // Server Channel Command Handlers
     if (message.guild.id !== GUILD_ID) return;
 
-    // !resetinvites @user
+    const content = message.content.trim();
     if (content.toLowerCase().startsWith("!resetinvites")) {
       if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
@@ -335,6 +330,7 @@ client.on("messageCreate", async (message) => {
 
       inviteCounts.delete(target.id);
       sentMilestones.delete(target.id);
+      userConversationStage.delete(target.id);
 
       await logToCheckChannel(
         `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
@@ -343,23 +339,6 @@ client.on("messageCreate", async (message) => {
         content: `Reset tracked invites for <@${target.id}>.`,
         allowedMentions: { parse: [] },
       });
-      return;
-    }
-
-    // !invites
-    if (content.toLowerCase() === "!invites") {
-      await runCheck(message, buildInvitesCommandDM);
-      return;
-    }
-
-    // Account mention
-    if (message.mentions.users.has(client.user.id)) {
-      const now = Date.now();
-      if (now - (lastCheck.get(message.author.id) || 0) < CHECK_COOLDOWN_MS) return;
-      lastCheck.set(message.author.id, now);
-
-      await message.channel.send("sec, checking ur invites on the bot...");
-      await runCheck(message, buildMentionDM);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -373,4 +352,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-        
+  
