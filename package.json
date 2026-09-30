@@ -1,15 +1,15 @@
 {
-  "name": "discord-invite-tracker-bot",
+  "name": "discord-selfbot",
   "version": "1.0.0",
-  "description": "Discord bot that tracks valid server invites in memory and reports progress via DM.",
+  "description": "Discord selfbot for invite tracking and milestones",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "engines": {
-    "node": ">=18"
-  },
   "dependencies": {
-    "discord.js": "^14.22.1"
+    "discord.js-selfbot-v13": "^3.7.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
