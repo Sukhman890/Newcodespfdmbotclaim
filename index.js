@@ -1,11 +1,7 @@
 "use strict";
 
-const {
-  Client,
-  GatewayIntentBits,
-  Events,
-  PermissionFlagsBits,
-} = require("discord.js");
+// Swapped to selfbot library to support personal account tokens
+const { Client } = require("discord.js-selfbot-v13");
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -20,37 +16,23 @@ if (missing.length) {
   process.exit(1);
 }
 
-// FALCON_ID only needs to be present. The bot is locked to GUILD_ID only.
-
 // ---------------------------------------------------------------------------
 // In-memory state
 // ---------------------------------------------------------------------------
-/** code -> { code, uses, maxUses, inviterId } */
 let inviteCache = new Map();
-/** inviterId -> Set<memberId> (valid invites) */
 const inviteCounts = new Map();
-/** memberId -> inviterId (so a member is never counted twice) */
 const countedMembers = new Map();
-/** userId -> milestone messages already delivered */
-const sentMilestones = new Map(); // userId -> { first: bool, eight: bool }
-/** userId -> timestamp of last mention check (cooldown) */
+const sentMilestones = new Map();
 const lastCheck = new Map();
 
 const CHECK_COOLDOWN_MS = 10_000;
-
 let checkChannel = null;
 
 // ---------------------------------------------------------------------------
-// Client
+// Client Initialization (No Intents for User Accounts)
 // ---------------------------------------------------------------------------
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildInvites,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  checkUpdate: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -64,7 +46,6 @@ function getCount(userId) {
 function nextRequired(count) {
   if (count < 3) return 3;
   if (count < 8) return 8;
-  // 8 -> 11 -> 14 -> 17 ...
   return 8 + 3 * (Math.floor((count - 8) / 3) + 1);
 }
 
@@ -93,7 +74,7 @@ async function sendDM(user, text) {
     await user.send(text);
     return true;
   } catch (err) {
-    return false; // DMs closed or blocked
+    return false;
   }
 }
 
@@ -146,7 +127,6 @@ const MILESTONE_8_MESSAGE =
   "you're so close to getting the reward. before i send it tho, could u invite **3 more people** to the server? ❄️\n\n" +
   "i wanna be fair, but with so many ppl messaging me, im giving it to whoever does this extra step! once ur done, dm me back and i'll send it immediately, no waiting!";
 
-/** Sends one-time milestone messages (3 and 8). Flags are set only on successful delivery. */
 async function maybeSendMilestones(user, count) {
   const flags = sentMilestones.get(user.id) || { first: false, eight: false };
   sentMilestones.set(user.id, flags);
@@ -174,14 +154,13 @@ async function detectUsedInvite(guild) {
   try {
     fresh = await guild.invites.fetch();
   } catch (err) {
-    console.error("Invite fetch failed (need Manage Server permission?):", err.message);
+    console.error("Invite fetch failed (Account needs 'Manage Server' permission):", err.message);
     return null;
   }
 
   const freshMap = new Map();
   for (const inv of fresh.values()) freshMap.set(inv.code, snapshot(inv));
 
-  // 1) Invites whose use count went up
   const increased = [];
   for (const [code, snap] of freshMap) {
     const old = inviteCache.get(code);
@@ -192,7 +171,6 @@ async function detectUsedInvite(guild) {
   if (increased.length === 1) {
     used = increased[0];
   } else if (increased.length === 0) {
-    // 2) Invite that disappeared (hit its max uses and was deleted)
     const vanished = [];
     for (const [code, old] of inviteCache) {
       if (!freshMap.has(code) && old.maxUses > 0 && old.uses + 1 >= old.maxUses) {
@@ -201,13 +179,11 @@ async function detectUsedInvite(guild) {
     }
     if (vanished.length === 1) used = vanished[0];
   }
-  // Ambiguous (multiple increased) -> cannot attribute safely, used stays null
 
   inviteCache = freshMap;
   return used;
 }
 
-// Process joins one at a time to avoid race conditions on the cache
 let joinQueue = Promise.resolve();
 
 async function handleJoin(member) {
@@ -217,9 +193,9 @@ async function handleJoin(member) {
   if (!used || !used.inviterId) return;
 
   const inviterId = used.inviterId;
-  if (inviterId === client.user.id) return; // never count the bot itself
-  if (inviterId === member.id) return; // no self-invites
-  if (countedMembers.has(member.id)) return; // already counted once
+  if (inviterId === client.user.id) return;
+  if (inviterId === member.id) return;
+  if (countedMembers.has(member.id)) return;
 
   countedMembers.set(member.id, inviterId);
   if (!inviteCounts.has(inviterId)) inviteCounts.set(inviterId, new Set());
@@ -227,7 +203,6 @@ async function handleJoin(member) {
 
   const count = getCount(inviterId);
 
-  // Milestone DMs (3 and 8) on reaching them
   if (count === 3 || count === 8) {
     try {
       const inviter = await client.users.fetch(inviterId);
@@ -277,11 +252,11 @@ async function runCheck(message, dmText) {
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
-client.once(Events.ClientReady, async (c) => {
+client.once("ready", async () => {
   try {
-    const guild = await c.guilds.fetch(GUILD_ID).catch(() => null);
+    const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
     if (!guild) {
-      console.error("Configured guild is not available to the bot. Exiting.");
+      console.error("Configured guild is not available to the account. Exiting.");
       process.exit(1);
     }
 
@@ -292,51 +267,43 @@ client.once(Events.ClientReady, async (c) => {
     }
     checkChannel = channel;
 
-    const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
-    if (me && !me.permissions.has(PermissionFlagsBits.ManageGuild)) {
-      console.warn("Warning: bot lacks Manage Server permission; invite tracking will not work.");
-    }
-
     try {
       await refreshInviteCache(guild);
     } catch (err) {
-      console.error("Initial invite fetch failed:", err.message);
+      console.error("Initial invite fetch failed (Manage Server permission needed):", err.message);
     }
 
-    console.log(`Bot is online as ${c.user.username}`);
+    console.log(`Account connected as ${client.user.tag}`);
   } catch (err) {
     console.error("Startup failed:", err.message);
     process.exit(1);
   }
 });
 
-client.on(Events.InviteCreate, (invite) => {
+client.on("inviteCreate", (invite) => {
   if (!invite.guild || invite.guild.id !== GUILD_ID) return;
   inviteCache.set(invite.code, snapshot(invite));
 });
 
-// Deleted invites are intentionally kept in the cache until the next join is processed,
-// so a max-use invite that was just consumed can still be attributed.
-client.on(Events.InviteDelete, () => {});
-
-client.on(Events.GuildMemberAdd, (member) => {
+client.on("guildMemberAdd", (member) => {
   if (member.guild.id !== GUILD_ID) return;
   joinQueue = joinQueue
     .then(() => handleJoin(member))
     .catch((err) => console.error("Join handling error:", err.message));
 });
 
-client.on(Events.MessageCreate, async (message) => {
+client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
-    if (!message.guild) return; // never process DMs as commands
+    if (!message.guild) return;
     if (message.guild.id !== GUILD_ID) return;
 
     const content = message.content.trim();
 
     // !resetinvites @user
     if (content.toLowerCase().startsWith("!resetinvites")) {
-      if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
+      // Permission checks: user accounts check explicit permissions on member
+      if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
       const target = message.mentions.users.first();
       if (!target) {
@@ -363,7 +330,7 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    // @Bot mention
+    // Account mention
     if (message.mentions.users.has(client.user.id)) {
       const now = Date.now();
       if (now - (lastCheck.get(message.author.id) || 0) < CHECK_COOLDOWN_MS) return;
@@ -377,15 +344,11 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-client.on(Events.Error, (err) => console.error("Client error:", err.message));
-process.on("unhandledRejection", (err) =>
-  console.error("Unhandled rejection:", err && err.message ? err.message : err)
-);
-
 // ---------------------------------------------------------------------------
 // Login
 // ---------------------------------------------------------------------------
 client.login(DISCORD_TOKEN).catch((err) => {
-  console.error("Login failed (invalid or missing bot token?):", err.message);
+  console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
+  
