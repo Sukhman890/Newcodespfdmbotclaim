@@ -23,10 +23,24 @@ const inviteCounts = new Map();
 const countedMembers = new Map();
 const sentMilestones = new Map();
 const lastCheck = new Map();
-const userConversationStage = new Map(); // Tracks dynamic chat stages per user
+const userConversationStage = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
 let checkChannel = null;
+
+// Keywords that allow trigger of invite checking
+const TRIGGER_KEYWORDS = [
+  "done",
+  "completed",
+  "i have completed my invites",
+  "now my reward",
+  "give me rewards",
+  "reward",
+  "check",
+  "invites done",
+  "i did",
+  "finished"
+];
 
 // ---------------------------------------------------------------------------
 // Client Initialization
@@ -74,8 +88,13 @@ async function logToCheckChannel(text) {
   }
 }
 
+function isTriggerPhrase(text) {
+  const lower = text.toLowerCase();
+  return TRIGGER_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 // ---------------------------------------------------------------------------
-// Dynamic Response Formatters matching Cherpl Flow
+// Dynamic Response Formatters
 // ---------------------------------------------------------------------------
 function getPreCheckingText(stage) {
   const variations = [
@@ -241,9 +260,10 @@ client.on("messageCreate", async (message) => {
       }
 
       const userId = message.author.id;
-      const lowerText = message.content.toLowerCase().trim();
+      const rawText = message.content.trim();
+      const lowerText = rawText.toLowerCase();
 
-      // Check fake/legit proof detection
+      // Scam/legit proof detection
       if (
         lowerText.includes("fake") ||
         lowerText.includes("legit") ||
@@ -263,26 +283,33 @@ client.on("messageCreate", async (message) => {
 
       let stage = userConversationStage.get(userId) || 0;
 
-      // Initial Conversational Warmup Sequence
+      // Stage 0: First interaction
       if (stage === 0) {
         await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
         userConversationStage.set(userId, 1);
         return;
       }
 
-      if (stage === 1) {
+      // Stage 1: Second interaction
+      if (stage === 1 && !isTriggerPhrase(rawText)) {
         await sendDM(message.author, "yeah go ahead, just come back when you've got the 3 invites");
         userConversationStage.set(userId, 2);
         return;
       }
 
-      if (stage === 2 && !lowerText.includes("done") && !lowerText.includes("invite") && !lowerText.includes("check")) {
+      // Stage 2: Third interaction
+      if (stage === 2 && !isTriggerPhrase(rawText)) {
         await sendDM(message.author, "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in");
         userConversationStage.set(userId, 3);
         return;
       }
 
-      // Check Invites Logic & Milestone handling
+      // Trigger phrase check before checking invites
+      if (!isTriggerPhrase(rawText)) {
+        return;
+      }
+
+      // Check Invites Logic
       userConversationStage.set(userId, stage + 1);
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -291,7 +318,7 @@ client.on("messageCreate", async (message) => {
 
       await logCheck(userId);
 
-      // Send the pre-checking status phrase
+      // Pre-checking message
       const preText = getPreCheckingText(stage);
       await sendDM(message.author, preText);
 
@@ -309,16 +336,18 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Progress Check Response if under required milestone target
+      // Under-target status phrase
       const progressMsg = getUnderTargetText(current, target, stage);
       await sendDM(message.author, progressMsg);
       return;
     }
 
-    // Server Channel Command Handlers
+    // Server Channels
     if (message.guild.id !== GUILD_ID) return;
 
     const content = message.content.trim();
+
+    // Reset command for admins
     if (content.toLowerCase().startsWith("!resetinvites")) {
       if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
@@ -339,6 +368,49 @@ client.on("messageCreate", async (message) => {
         content: `Reset tracked invites for <@${target.id}>.`,
         allowedMentions: { parse: [] },
       });
+      return;
+    }
+
+    // Account mention checking (only when message contains trigger keywords)
+    if (message.mentions.users.has(client.user.id)) {
+      if (!isTriggerPhrase(content)) return;
+
+      const userId = message.author.id;
+      const now = Date.now();
+      if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
+      lastCheck.set(userId, now);
+
+      let stage = userConversationStage.get(userId) || 0;
+      userConversationStage.set(userId, stage + 1);
+
+      const current = getCount(userId);
+      const target = nextRequired(current);
+      const flags = sentMilestones.get(userId) || { first: false, eight: false };
+      sentMilestones.set(userId, flags);
+
+      await logCheck(userId);
+
+      // Pre-checking text
+      const preText = getPreCheckingText(stage);
+      await message.channel.send(preText);
+
+      // Milestone 1 (3 Invites)
+      if (current >= 3 && !flags.first) {
+        flags.first = true;
+        await sendDM(message.author, MILESTONE_3_MESSAGE);
+        return;
+      }
+
+      // Milestone 2 (8 Invites)
+      if (current >= 8 && !flags.eight) {
+        flags.eight = true;
+        await sendDM(message.author, MILESTONE_8_MESSAGE);
+        return;
+      }
+
+      // Status text update
+      const progressMsg = getUnderTargetText(current, target, stage);
+      await message.channel.send(progressMsg);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -352,4 +424,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-  
+      
