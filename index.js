@@ -81,13 +81,13 @@ let inviteCache = new Map();
 const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
+const humanInquiryCount = new Map();
 
-const CHECK_COOLDOWN_MS = 5_000;
-const RESPONSE_DELAY_MS = 3_000;
+const CHECK_COOLDOWN_MS = 2_000;
 const MIN_ACCOUNT_AGE_DAYS = 7;
 let checkChannel = null;
 
-// Trigger keywords for invite checking ONLY
+// Trigger keywords for invite checking
 const TRIGGER_KEYWORDS = [
   "invite",
   "invites",
@@ -124,6 +124,26 @@ const TRIGGER_KEYWORDS = [
 
 const CLAIM_REGEX = /\b(invite|invites|invited|inv|have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
 
+// Keywords for "are you human/bot" inquiries
+const HUMAN_BOT_KEYWORDS = [
+  "are you bot",
+  "are u bot",
+  "r u bot",
+  "u bot",
+  "you bot",
+  "are you a bot",
+  "are u a bot",
+  "r u a bot",
+  "are you human",
+  "are u human",
+  "r u human",
+  "is this a bot",
+  "is this bot",
+  "real person",
+  "real human",
+  "ai bot"
+];
+
 // ---------------------------------------------------------------------------
 // Client Initialization
 // ---------------------------------------------------------------------------
@@ -132,8 +152,6 @@ const client = new Client({ checkUpdate: false });
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 function getCount(userId) {
   const set = inviteCounts.get(userId);
   return set ? set.size : 0;
@@ -154,22 +172,40 @@ function snapshot(inv) {
   };
 }
 
-async function sendSeparateDMs(user, text1, text2) {
+// Instant DM helper
+async function sendDM(user, text) {
   try {
-    await user.send(text1);
-    await delay(2000);
-    await user.send(text2);
+    await user.send(text);
     return true;
   } catch (err) {
     return false;
   }
 }
 
+// Fast DM helper (sends simultaneously)
+async function sendSeparateDMs(user, text1, text2) {
+  try {
+    await Promise.all([user.send(text1), user.send(text2)]);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Instant Channel helper
+async function sendChannelMessage(channel, text) {
+  try {
+    await channel.send(text);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Fast Channel helper (sends simultaneously)
 async function sendSeparateChannelMessages(channel, text1, text2) {
   try {
-    await channel.send(text1);
-    await delay(2000);
-    await channel.send(text2);
+    await Promise.all([channel.send(text1), channel.send(text2)]);
     return true;
   } catch (err) {
     return false;
@@ -192,9 +228,9 @@ function isTriggerPhrase(text) {
   return matchedKeyword || matchedRegex;
 }
 
-function isAlreadyPhrase(text) {
+function isHumanBotInquiry(text) {
   const lower = text.toLowerCase().trim();
-  return lower.includes("already") || lower.includes("already my invites") || lower.includes("i have already");
+  return HUMAN_BOT_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
 // ---------------------------------------------------------------------------
@@ -203,37 +239,31 @@ function isAlreadyPhrase(text) {
 function getPreCheckingText(stage) {
   const variations = [
     "sec, checking ur invites on the bot...",
+    "gimme a sec pulling ur invites up...",
     "one sec lemme check...",
-    "checking rq..."
+    "hold on checking ur invites rq..."
   ];
   return variations[stage % variations.length];
 }
 
-function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
+function getUnderTargetText(current, target, stage) {
   const remaining = Math.max(0, target - current);
-  let mainText;
 
   if (target === 3) {
     const texts = [
-      `u only got ${current} rn bro, need ${target} to unlock — almost there`,
-      `ur at ${current} rn, get ${remaining} more and ur good`,
-      `showing ${current} invite(s) lol, just need ${remaining} more`
+      `u only got ${current} rn bro, need ${target} to unlock — almost there! just need ${remaining} more invites`,
+      `ur at ${current} rn, get ${remaining} more invites and ur good`,
+      `showing ${current} invite(s) lol, u need ${remaining} more invites to claim`
     ];
-    mainText = texts[stage % texts.length];
+    return texts[stage % texts.length];
   } else {
     const texts = [
-      `checked and u got ${current}, need ${target} to reserve ur prize. almost there bro`,
-      `showing ${current} rn lol, get to ${target} and i lock ur payout in`,
-      `showing ${current} rn lol, get to ${target} and i lock ur payout in`
+      `checked and u got ${current} rn, need ${target} to reserve ur prize. get ${remaining} more invites bro`,
+      `showing ${current} rn lol, get ${remaining} more invites to reach ${target} and i lock ur payout in`,
+      `ur at ${current} invites, u need ${remaining} more to unlock the reward`
     ];
-    mainText = texts[stage % texts.length];
+    return texts[stage % texts.length];
   }
-
-  if (wasAlreadyClaim) {
-    mainText += `\n\ncomplete fast and hit me when it's done, type "done" when you have the invites!`;
-  }
-
-  return mainText;
 }
 
 const MILESTONE_3_MESSAGE =
@@ -399,6 +429,18 @@ client.on("messageCreate", async (message) => {
       const userId = message.author.id;
       const rawText = message.content.trim();
 
+      if (isHumanBotInquiry(rawText)) {
+        const askCount = humanInquiryCount.get(userId) || 0;
+        humanInquiryCount.set(userId, askCount + 1);
+
+        if (askCount === 0) {
+          await sendDM(message.author, "lmao bro im real i just got like 50 dms rn 😭");
+        } else {
+          await sendDM(message.author, "bruh im real just type fast bc i got a lot of dms");
+        }
+        return;
+      }
+
       if (!isTriggerPhrase(rawText)) return;
 
       const now = Date.now();
@@ -413,11 +455,11 @@ client.on("messageCreate", async (message) => {
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
       sentMilestones.set(userId, flags);
 
-      await logCheck(userId);
+      // Async background logging to avoid blocking response
+      logCheck(userId);
 
       const preText = getPreCheckingText(stage);
-      const wasAlready = isAlreadyPhrase(rawText);
-      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
+      const progressMsg = getUnderTargetText(current, target, stage);
 
       if (current >= 3 && !flags.first) {
         flags.first = true;
@@ -453,10 +495,11 @@ client.on("messageCreate", async (message) => {
       inviteCounts.delete(target.id);
       sentMilestones.delete(target.id);
       userConversationStage.delete(target.id);
+      humanInquiryCount.delete(target.id);
 
       saveData();
 
-      await logToCheckChannel(
+      logToCheckChannel(
         `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
       );
       await message.reply({
@@ -469,6 +512,18 @@ client.on("messageCreate", async (message) => {
     // Channel Mentions
     if (message.mentions.users.has(client.user.id)) {
       const userId = message.author.id;
+
+      if (isHumanBotInquiry(content)) {
+        const askCount = humanInquiryCount.get(userId) || 0;
+        humanInquiryCount.set(userId, askCount + 1);
+
+        if (askCount === 0) {
+          await sendChannelMessage(message.channel, "lmao bro im real i just got like 50 dms rn 😭");
+        } else {
+          await sendChannelMessage(message.channel, "bruh im real just type fast bc i got a lot of dms");
+        }
+        return;
+      }
 
       if (!isTriggerPhrase(content)) return;
 
@@ -484,11 +539,11 @@ client.on("messageCreate", async (message) => {
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
       sentMilestones.set(userId, flags);
 
-      await logCheck(userId);
+      // Async background logging
+      logCheck(userId);
 
       const preText = getPreCheckingText(stage);
-      const wasAlready = isAlreadyPhrase(content);
-      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
+      const progressMsg = getUnderTargetText(current, target, stage);
 
       if (current >= 3 && !flags.first) {
         flags.first = true;
@@ -516,4 +571,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-          
+  
