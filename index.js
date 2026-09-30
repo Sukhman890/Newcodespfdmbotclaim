@@ -28,7 +28,7 @@ const userConversationStage = new Map();
 const CHECK_COOLDOWN_MS = 5_000;
 let checkChannel = null;
 
-// Expanded Keywords & Patterns that trigger an invite check
+// Keywords that trigger an invite check
 const TRIGGER_KEYWORDS = [
   "done",
   "completed",
@@ -48,11 +48,14 @@ const TRIGGER_KEYWORDS = [
   "have 8",
   "got 8",
   "have 11",
-  "got 11"
+  "got 11",
+  "i have already",
+  "already invited",
+  "already my invites",
+  "already done"
 ];
 
-// Regex pattern to catch numbers inside claim messages like "i have 3", "got 5 invites", etc.
-const CLAIM_REGEX = /\b(have|got|did|done|made)\s*(\d+|\w+)\b/i;
+const CLAIM_REGEX = /\b(have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
 
 // ---------------------------------------------------------------------------
 // Client Initialization
@@ -107,6 +110,11 @@ function isTriggerPhrase(text) {
   return matchedKeyword || matchedRegex;
 }
 
+function isAlreadyPhrase(text) {
+  const lower = text.toLowerCase().trim();
+  return lower.includes("already") || lower.includes("already my invites") || lower.includes("i have already");
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic Response Formatters
 // ---------------------------------------------------------------------------
@@ -119,24 +127,32 @@ function getPreCheckingText(stage) {
   return variations[stage % variations.length];
 }
 
-function getUnderTargetText(current, target, stage) {
+function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
   const remaining = Math.max(0, target - current);
-  
+  let mainText;
+
   if (target === 3) {
     const texts = [
       `ur at ${current} rn, get ${remaining} more and ur good`,
       `u only got ${current} rn bro, need ${target} to unlock — almost there`,
       `showing ${current} invite(s) lol, just need ${remaining} more`
     ];
-    return texts[stage % texts.length];
+    mainText = texts[stage % texts.length];
   } else {
     const texts = [
       `checked and u got ${current}, need ${target} to reserve ur prize. almost there bro`,
       `showing ${current} rn lol, get to ${target} and i lock ur payout in`,
       `showing ${current} rn lol, get to ${target} and i lock ur payout in`
     ];
-    return texts[stage % texts.length];
+    mainText = texts[stage % texts.length];
   }
+
+  // If user said "already invited/have invites", append completion prompt
+  if (wasAlreadyClaim) {
+    mainText += `\n\ncomplete fast and hit me when it's done, type "done" when you have the invites!`;
+  }
+
+  return mainText;
 }
 
 const MILESTONE_3_MESSAGE =
@@ -351,7 +367,8 @@ client.on("messageCreate", async (message) => {
       }
 
       // Under-target status message
-      const progressMsg = getUnderTargetText(current, target, stage);
+      const wasAlready = isAlreadyPhrase(rawText);
+      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
       await sendDM(message.author, progressMsg);
       return;
     }
@@ -423,7 +440,8 @@ client.on("messageCreate", async (message) => {
       }
 
       // Under-target status phrase
-      const progressMsg = getUnderTargetText(current, target, stage);
+      const wasAlready = isAlreadyPhrase(content);
+      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
       await message.channel.send(progressMsg);
     }
   } catch (err) {
