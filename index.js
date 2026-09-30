@@ -24,7 +24,7 @@ const humanInquiryCount = new Map();
 const sentMilestones = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
-const RESPONSE_DELAY_MS = 3_000;
+const RESPONSE_DELAY_MS = 15_000;
 let targetGuild = null;
 let checkChannel = null;
 
@@ -131,6 +131,7 @@ async function sendDM(user, text) {
 
 async function sendSeparateDMs(user, text1, text2) {
   try {
+    await delay(RESPONSE_DELAY_MS);
     await user.send(text1);
     await delay(2000);
     await user.send(text2);
@@ -152,6 +153,7 @@ async function sendChannelMessage(channel, text) {
 
 async function sendSeparateChannelMessages(channel, text1, text2) {
   try {
+    await delay(RESPONSE_DELAY_MS);
     await channel.send(text1);
     await delay(2000);
     await channel.send(text2);
@@ -199,7 +201,7 @@ function isLegitimacyInquiry(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Response Formatters
+// Response Formatters (Cartel Style Integration)
 // ---------------------------------------------------------------------------
 function getPreCheckingText(stage) {
   const variations = [
@@ -242,7 +244,7 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
 const MILESTONE_3_MESSAGE =
   "-# 🧑‍🌾 Thanks for INVITING! I appreciate you for giving your time.\n\n" +
   "💫 Either wait `2 weeks` to claim or get **__5 EXTRA INVITES__** to the server for an **INSTANT CLAIM**. ⚡\n\n" +
-  "> ❤️ - We have this system to prevent people from abusing our systems because it has happened several times.";
+  "> ❤️️ - We have this system to prevent people from abusing our systems because it has happened several times.";
 
 const MILESTONE_8_MESSAGE =
   "👋 hey, sorry for the delay!\n" +
@@ -293,19 +295,9 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot || message.author.id === client.user.id) return;
 
-    // Direct Messages (DMs) - Only process if user is in the target server
+    // Direct Messages (DMs) - Accepts every DM without requiring them to be in the guild
     if (!message.guild) {
-      if (!targetGuild) return;
-      
-      let member = targetGuild.members.cache.get(message.author.id);
-      if (!member) {
-        try {
-          member = await targetGuild.members.fetch(message.author.id);
-        } catch (err) {
-          return; // Ignore users not in the target guild
-        }
-      }
-
+      // Automatically attempt to accept any incoming message request / pending DM channel
       if (typeof message.channel.accept === "function") {
         await message.channel.accept().catch(() => null);
       }
@@ -344,7 +336,8 @@ client.on("messageCreate", async (message) => {
         let stage = userConversationStage.get(userId) || 0;
         userConversationStage.set(userId, stage + 1);
 
-        const current = await getRealInviteCount(targetGuild, userId);
+        // Fetch invites from targetGuild (if the user is in it, it counts, otherwise defaults to 0)
+        const current = targetGuild ? await getRealInviteCount(targetGuild, userId) : 0;
         const target = nextRequired(current);
         const flags = sentMilestones.get(userId) || { first: false, eight: false };
         sentMilestones.set(userId, flags);
@@ -371,7 +364,7 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // If it doesn't match any of the allowed specific types, completely ignore it (no response)
+      // Ignore unhandled DM messages
       return;
     }
 
@@ -442,4 +435,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-      
+  
