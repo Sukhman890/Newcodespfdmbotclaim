@@ -18,9 +18,15 @@ if (missing.length) {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence Setup (Saves invites to invites.json)
+// Folder Persistence Setup (Saves to ./data/invites.json)
 // ---------------------------------------------------------------------------
-const DATA_FILE = path.join(__dirname, "invites.json");
+const DATA_DIR = path.join(__dirname, "data");
+const DATA_FILE = path.join(DATA_DIR, "invites.json");
+
+// Ensure the directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function loadSavedData() {
   if (!fs.existsSync(DATA_FILE)) return { inviteCounts: {}, countedMembers: {} };
@@ -28,7 +34,7 @@ function loadSavedData() {
     const raw = fs.readFileSync(DATA_FILE, "utf-8");
     return JSON.parse(raw);
   } catch (err) {
-    console.error("Failed to read invites.json, initializing fresh data:", err.message);
+    console.error("Failed to read data/invites.json, initializing fresh data:", err.message);
     return { inviteCounts: {}, countedMembers: {} };
   }
 }
@@ -45,7 +51,7 @@ function saveData() {
     }
     fs.writeFileSync(DATA_FILE, JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj }, null, 2));
   } catch (err) {
-    console.error("Failed to save data to invites.json:", err.message);
+    console.error("Failed to save data to data/invites.json:", err.message);
   }
 }
 
@@ -69,7 +75,7 @@ const nonTriggerStage = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
-const MIN_ACCOUNT_AGE_DAYS = 7; // Ignore accounts younger than 7 days (Fake accounts)
+const MIN_ACCOUNT_AGE_DAYS = 7;
 let checkChannel = null;
 
 // Trigger keywords for invite checking
@@ -343,7 +349,6 @@ async function handleJoin(member) {
 
   if (member.user.bot || !used || !used.inviterId) return;
 
-  // Filter out fake/new accounts (Created < 7 days ago)
   const accountAgeDays = (Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24);
   if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
     console.log(`Skipped counting invite for ${member.user.tag}: Account is too new (${accountAgeDays.toFixed(1)} days old).`);
@@ -357,7 +362,6 @@ async function handleJoin(member) {
   if (!inviteCounts.has(inviterId)) inviteCounts.set(inviterId, new Set());
   inviteCounts.get(inviterId).add(member.id);
 
-  // Save updated data to invites.json
   saveData();
 }
 
@@ -610,4 +614,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-    
+                                               
