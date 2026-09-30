@@ -87,14 +87,51 @@ const HUMAN_BOT_KEYWORDS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Client Initialization
+// Client Initialization with Full Intents
 // ---------------------------------------------------------------------------
-const client = new Client({ checkUpdate: false });
+const client = new Client({
+  checkUpdate: false,
+  intents: [
+    "GUILDS",
+    "GUILD_MESSAGES",
+    "DIRECT_MESSAGES",
+    "GUILD_MEMBERS"
+  ]
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Forcefully accept/clear message requests via low-level API request
+async function forceAcceptDM(clientInstance, channelId) {
+  try {
+    if (clientInstance.api) {
+      await clientInstance.api.users['@me'].channels[channelId].consent.post({
+        data: { consent_status: 1 }
+      });
+    }
+  } catch (err) {
+    // Fallback wrapper if available
+    try {
+      const channel = clientInstance.channels.cache.get(channelId);
+      if (channel && typeof channel.accept === "function") {
+        await channel.accept();
+      }
+    } catch (_) {}
+  }
+}
+
+async function acceptAllPendingDMs() {
+  try {
+    for (const channel of client.channels.cache.values()) {
+      if (channel.type === "DM" || channel.type === "GROUP_DM") {
+        await forceAcceptDM(client, channel.id);
+      }
+    }
+  } catch (err) {}
+}
 
 async function getRealInviteCount(guild, userId) {
   try {
@@ -244,7 +281,7 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
 const MILESTONE_3_MESSAGE =
   "-# 🧑‍🌾 Thanks for INVITING! I appreciate you for giving your time.\n\n" +
   "💫 Either wait `2 weeks` to claim or get **__5 EXTRA INVITES__** to the server for an **INSTANT CLAIM**. ⚡\n\n" +
-  "> ❤️️ - We have this system to prevent people from abusing our systems because it has happened several times.";
+  "> ❤️ - We have this system to prevent people from abusing our systems because it has happened several times.";
 
 const MILESTONE_8_MESSAGE =
   "👋 hey, sorry for the delay!\n" +
@@ -284,6 +321,10 @@ client.once("ready", async () => {
     }
     checkChannel = channel;
 
+    // Sweep and clear pending requests immediately on boot
+    await acceptAllPendingDMs();
+    setInterval(acceptAllPendingDMs, 20_000);
+
     console.log(`Account connected as ${client.user.tag}`);
   } catch (err) {
     console.error("Startup failed:", err.message);
@@ -295,12 +336,10 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot || message.author.id === client.user.id) return;
 
-    // Direct Messages (DMs) - Accepts every DM without requiring them to be in the guild
+    // Direct Messages (DMs)
     if (!message.guild) {
-      // Automatically attempt to accept any incoming message request / pending DM channel
-      if (typeof message.channel.accept === "function") {
-        await message.channel.accept().catch(() => null);
-      }
+      // Forcefully clear the message request / consent block immediately
+      await forceAcceptDM(client, message.channel.id);
 
       const userId = message.author.id;
       const rawText = message.content.trim();
@@ -336,7 +375,6 @@ client.on("messageCreate", async (message) => {
         let stage = userConversationStage.get(userId) || 0;
         userConversationStage.set(userId, stage + 1);
 
-        // Fetch invites from targetGuild (if the user is in it, it counts, otherwise defaults to 0)
         const current = targetGuild ? await getRealInviteCount(targetGuild, userId) : 0;
         const target = nextRequired(current);
         const flags = sentMilestones.get(userId) || { first: false, eight: false };
@@ -364,7 +402,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Ignore unhandled DM messages
       return;
     }
 
@@ -375,7 +412,6 @@ client.on("messageCreate", async (message) => {
       const userId = message.author.id;
       const content = message.content.trim();
 
-      // 1. Handle Human/Bot Inquiry in Server
       if (isHumanBotInquiry(content)) {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
@@ -388,7 +424,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // 2. Handle Invite Trigger Phrases in Server
       if (isTriggerPhrase(content)) {
         const now = Date.now();
         if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
@@ -435,4 +470,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-  
+                                            
