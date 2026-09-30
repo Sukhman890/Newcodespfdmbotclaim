@@ -20,11 +20,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-// FALCON_ID is the authorized server identifier; it must match the configured guild.
-if (FALCON_ID.trim() !== GUILD_ID.trim()) {
-  console.error("FALCON_ID does not match the configured GUILD_ID. Refusing to start.");
-  process.exit(1);
-}
+// FALCON_ID only needs to be present. The bot is locked to GUILD_ID only.
 
 // ---------------------------------------------------------------------------
 // In-memory state
@@ -335,7 +331,6 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (!message.guild) return; // never process DMs as commands
     if (message.guild.id !== GUILD_ID) return;
-    if (FALCON_ID.trim() !== message.guild.id) return;
 
     const content = message.content.trim();
 
