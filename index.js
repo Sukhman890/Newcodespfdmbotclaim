@@ -293,7 +293,7 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
 const MILESTONE_3_MESSAGE =
   "-# 🧑‍🌾 Thanks for INVITING! I appreciate you for giving your time.\n\n" +
   "💫 Either wait `2 weeks` to claim or get **__5 EXTRA INVITES__** to the server for an **INSTANT CLAIM**. ⚡\n\n" +
-  "> ❤️ - We have this system to prevent people from abusing our systems because it has happened several times.";
+  "> ❤️️ - We have this system to prevent people from abusing our systems because it has happened several times.";
 
 const MILESTONE_8_MESSAGE =
   "👋 hey, sorry for the delay!\n" +
@@ -442,13 +442,11 @@ client.on("messageCreate", async (message) => {
     if (!message.guild) {
       if (!targetGuild) return;
       
-      // Verify user is a member of the target server
       let member = targetGuild.members.cache.get(message.author.id);
       if (!member) {
         try {
           member = await targetGuild.members.fetch(message.author.id);
         } catch (err) {
-          // User is not in the target server, ignore them completely
           return;
         }
       }
@@ -641,3 +639,6 @@ client.on("messageCreate", async (message) => {
 // ---------------------------------------------------------------------------
 client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
+  process.exit(1);
+});
+                  
