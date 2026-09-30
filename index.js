@@ -30,7 +30,7 @@ function ensureStorageExists() {
   if (!fs.existsSync(DATA_FILE)) {
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ inviteCounts: {}, countedMembers: {}, userStages: {} }, null, 2)
+      JSON.stringify({ inviteCounts: {}, countedMembers: {} }, null, 2)
     );
   }
 }
@@ -43,7 +43,7 @@ function loadSavedData() {
     return JSON.parse(raw);
   } catch (err) {
     console.error("Failed to read data/invites.json, initializing fresh data:", err.message);
-    return { inviteCounts: {}, countedMembers: {}, userStages: {} };
+    return { inviteCounts: {}, countedMembers: {} };
   }
 }
 
@@ -58,13 +58,9 @@ function saveData() {
     for (const [memberId, inviterId] of countedMembers.entries()) {
       membersObj[memberId] = inviterId;
     }
-    const stagesObj = {};
-    for (const [userId, stage] of userConversationStage.entries()) {
-      stagesObj[userId] = stage;
-    }
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj, userStages: stagesObj }, null, 2)
+      JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj }, null, 2)
     );
   } catch (err) {
     console.error("Failed to save data to data/invites.json:", err.message);
@@ -77,7 +73,6 @@ for (const [inviterId, memberArray] of Object.entries(initialData.inviteCounts |
   inviteCounts.set(inviterId, new Set(memberArray));
 }
 const countedMembers = new Map(Object.entries(initialData.countedMembers || {}));
-const userConversationStage = new Map(Object.entries(initialData.userStages || {}));
 
 // ---------------------------------------------------------------------------
 // In-memory runtime state
@@ -136,33 +131,12 @@ function snapshot(inv) {
   };
 }
 
-// Auto-accept DM requests and send message
 async function sendDM(channel, text) {
   try {
-    if (typeof channel.accept === "function") {
-      await channel.accept().catch(() => null);
-    }
     await channel.send(text);
     return true;
   } catch (err) {
     console.error("Failed to send DM:", err.message);
-    return false;
-  }
-}
-
-async function sendSeparateDMs(channel, text1, text2) {
-  try {
-    if (typeof channel.accept === "function") {
-      await channel.accept().catch(() => null);
-    }
-    if (text1) {
-      await Promise.all([channel.send(text1), channel.send(text2)]);
-    } else {
-      await channel.send(text2);
-    }
-    return true;
-  } catch (err) {
-    console.error("Failed to send separate DMs:", err.message);
     return false;
   }
 }
@@ -187,17 +161,8 @@ function isHumanBotInquiry(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Response Formatters
+// Response Formatters (Only clean stats response now)
 // ---------------------------------------------------------------------------
-function getPreCheckingText(stage) {
-  const variations = [
-    "🎁 invite `3 people` to the server and the giftcard code/ mcfa is yours!",
-    "yeah go ahead, just come back when you've got the 3 invites",
-    "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
-  ];
-  return stage < variations.length ? variations[stage] : null;
-}
-
 function getUnderTargetText(current, target) {
   const remaining = Math.max(0, target - current);
   if (target === 3) {
@@ -343,11 +308,6 @@ client.on("guildMemberRemove", (member) => {
   handleLeave(member);
 });
 
-// Auto-accept DM requests when receiving a message request
-client.on("relationship", async (relationship) => {
-  if (relationship.type === 1 || relationship.type === 2) return;
-});
-
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot || message.author.id === client.user.id) return;
@@ -356,11 +316,6 @@ client.on("messageCreate", async (message) => {
     if (!message.guild) {
       const userId = message.author.id;
       const rawText = message.content.trim();
-
-      // Always accept message requests on direct message
-      if (typeof message.channel.accept === "function") {
-        await message.channel.accept().catch(() => null);
-      }
 
       if (isHumanBotInquiry(rawText)) {
         const askCount = humanInquiryCount.get(userId) || 0;
@@ -380,8 +335,6 @@ client.on("messageCreate", async (message) => {
       if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
       lastCheck.set(userId, now);
 
-      let stage = userConversationStage.get(userId) ?? 0;
-
       const current = getCount(userId);
       const target = nextRequired(current);
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
@@ -389,26 +342,20 @@ client.on("messageCreate", async (message) => {
 
       logCheck(userId);
 
-      const preText = getPreCheckingText(stage);
-      const progressMsg = getUnderTargetText(current, target);
-
-      // Increment and save stage state
-      userConversationStage.set(userId, stage + 1);
-      saveData();
-
       if (current >= 3 && !flags.first) {
         flags.first = true;
-        await sendSeparateDMs(message.channel, preText, MILESTONE_3_MESSAGE);
+        await sendDM(message.channel, MILESTONE_3_MESSAGE);
         return;
       }
 
       if (current >= 8 && !flags.eight) {
         flags.eight = true;
-        await sendSeparateDMs(message.channel, preText, MILESTONE_8_MESSAGE);
+        await sendDM(message.channel, MILESTONE_8_MESSAGE);
         return;
       }
 
-      await sendSeparateDMs(message.channel, preText, progressMsg);
+      const progressMsg = getUnderTargetText(current, target);
+      await sendDM(message.channel, progressMsg);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -422,4 +369,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-                         
+      
