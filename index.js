@@ -25,6 +25,7 @@ const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
+const nonTriggerStage = new Map(); // Tracks the step for non-trigger messages
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
@@ -391,9 +392,19 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // If message is unrelated to triggers, reply with the instruction
+      // Progressive Flow for messages unrelated to invite triggers
       if (!isTriggerPhrase(rawText)) {
-        await sendDM(message.author, "complete invites then msg me in done or mention me");
+        const step = nonTriggerStage.get(userId) || 0;
+
+        if (step === 0) {
+          await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+          nonTriggerStage.set(userId, 1);
+        } else if (step === 1) {
+          await sendDM(message.author, "yeah go ahead, just come back when you've got the 3 invites");
+          nonTriggerStage.set(userId, 2);
+        } else {
+          await sendDM(message.author, "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in");
+        }
         return;
       }
 
@@ -452,6 +463,7 @@ client.on("messageCreate", async (message) => {
       sentMilestones.delete(target.id);
       userConversationStage.delete(target.id);
       humanInquiryCount.delete(target.id);
+      nonTriggerStage.delete(target.id);
 
       await logToCheckChannel(
         `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
@@ -480,7 +492,17 @@ client.on("messageCreate", async (message) => {
       }
 
       if (!isTriggerPhrase(content)) {
-        await sendChannelMessage(message.channel, "complete invites then msg me in done or mention me");
+        const step = nonTriggerStage.get(userId) || 0;
+
+        if (step === 0) {
+          await sendChannelMessage(message.channel, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+          nonTriggerStage.set(userId, 1);
+        } else if (step === 1) {
+          await sendChannelMessage(message.channel, "yeah go ahead, just come back when you've got the 3 invites");
+          nonTriggerStage.set(userId, 2);
+        } else {
+          await sendChannelMessage(message.channel, "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in");
+        }
         return;
       }
 
@@ -529,3 +551,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
+  
