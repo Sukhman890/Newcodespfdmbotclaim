@@ -261,7 +261,9 @@ client.once("ready", async () => {
     }
 
     const channel = await guild.channels.fetch(CHECK_CHANNEL_ID).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
+    
+    // Fixed: Channel check compatible with discord.js-selfbot-v13
+    if (!channel || (channel.type !== "GUILD_TEXT" && !channel.isText())) {
       console.error("Private check channel not found or not a text channel. Exiting.");
       process.exit(1);
     }
@@ -302,7 +304,6 @@ client.on("messageCreate", async (message) => {
 
     // !resetinvites @user
     if (content.toLowerCase().startsWith("!resetinvites")) {
-      // Permission checks: user accounts check explicit permissions on member
       if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
       const target = message.mentions.users.first();
@@ -351,4 +352,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-  
+                        
