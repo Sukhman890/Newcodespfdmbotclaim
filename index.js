@@ -1,6 +1,8 @@
 "use strict";
 
 const { Client } = require("discord.js-selfbot-v13");
+const fs = require("fs");
+const path = require("path");
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -16,19 +18,58 @@ if (missing.length) {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory state
+// Persistence Setup (Saves invites to invites.json)
+// ---------------------------------------------------------------------------
+const DATA_FILE = path.join(__dirname, "invites.json");
+
+function loadSavedData() {
+  if (!fs.existsSync(DATA_FILE)) return { inviteCounts: {}, countedMembers: {} };
+  try {
+    const raw = fs.readFileSync(DATA_FILE, "utf-8");
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("Failed to read invites.json, initializing fresh data:", err.message);
+    return { inviteCounts: {}, countedMembers: {} };
+  }
+}
+
+function saveData() {
+  try {
+    const countsObj = {};
+    for (const [inviterId, memberSet] of inviteCounts.entries()) {
+      countsObj[inviterId] = Array.from(memberSet);
+    }
+    const membersObj = {};
+    for (const [memberId, inviterId] of countedMembers.entries()) {
+      membersObj[memberId] = inviterId;
+    }
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj }, null, 2));
+  } catch (err) {
+    console.error("Failed to save data to invites.json:", err.message);
+  }
+}
+
+// Initialize maps from saved data
+const initialData = loadSavedData();
+const inviteCounts = new Map();
+for (const [inviterId, memberArray] of Object.entries(initialData.inviteCounts || {})) {
+  inviteCounts.set(inviterId, new Set(memberArray));
+}
+const countedMembers = new Map(Object.entries(initialData.countedMembers || {}));
+
+// ---------------------------------------------------------------------------
+// In-memory runtime state
 // ---------------------------------------------------------------------------
 let inviteCache = new Map();
-const inviteCounts = new Map();
-const countedMembers = new Map();
 const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
-const nonTriggerStage = new Map(); // Tracks the step for non-trigger messages
+const nonTriggerStage = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
+const MIN_ACCOUNT_AGE_DAYS = 7; // Ignore accounts younger than 7 days (Fake accounts)
 let checkChannel = null;
 
 // Trigger keywords for invite checking
@@ -128,7 +169,6 @@ async function sendDM(user, text) {
   }
 }
 
-// Helper to send 2 separate messages with a delay between them
 async function sendSeparateDMs(user, text1, text2) {
   try {
     await user.send(text1);
@@ -252,7 +292,7 @@ async function logCheck(userId) {
 }
 
 // ---------------------------------------------------------------------------
-// Invite detection
+// Invite detection & Syncing
 // ---------------------------------------------------------------------------
 async function refreshInviteCache(guild) {
   const fresh = await guild.invites.fetch();
@@ -303,12 +343,31 @@ async function handleJoin(member) {
 
   if (member.user.bot || !used || !used.inviterId) return;
 
+  // Filter out fake/new accounts (Created < 7 days ago)
+  const accountAgeDays = (Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24);
+  if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
+    console.log(`Skipped counting invite for ${member.user.tag}: Account is too new (${accountAgeDays.toFixed(1)} days old).`);
+    return;
+  }
+
   const inviterId = used.inviterId;
   if (inviterId === client.user.id || inviterId === member.id || countedMembers.has(member.id)) return;
 
   countedMembers.set(member.id, inviterId);
   if (!inviteCounts.has(inviterId)) inviteCounts.set(inviterId, new Set());
   inviteCounts.get(inviterId).add(member.id);
+
+  // Save updated data to invites.json
+  saveData();
+}
+
+function handleLeave(member) {
+  const inviterId = countedMembers.get(member.id);
+  if (inviterId && inviteCounts.has(inviterId)) {
+    inviteCounts.get(inviterId).delete(member.id);
+    countedMembers.delete(member.id);
+    saveData();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,9 +409,13 @@ client.on("guildMemberAdd", (member) => {
     .catch((err) => console.error("Join handling error:", err.message));
 });
 
+client.on("guildMemberRemove", (member) => {
+  if (member.guild.id !== GUILD_ID) return;
+  handleLeave(member);
+});
+
 client.on("messageCreate", async (message) => {
   try {
-    // Ignore bot users AND selfbot messages
     if (message.author.bot || message.author.id === client.user.id) return;
 
     // Direct Messages (DMs)
@@ -365,7 +428,6 @@ client.on("messageCreate", async (message) => {
       const rawText = message.content.trim();
       const lowerText = rawText.toLowerCase();
 
-      // Human/bot question check
       if (isHumanBotInquiry(rawText)) {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
@@ -378,7 +440,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Scam/proof check
       if (
         lowerText.includes("fake") ||
         lowerText.includes("legit") ||
@@ -392,7 +453,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Progressive Flow for messages unrelated to invite triggers
       if (!isTriggerPhrase(rawText)) {
         const step = nonTriggerStage.get(userId) || 0;
 
@@ -414,7 +474,6 @@ client.on("messageCreate", async (message) => {
 
       let stage = userConversationStage.get(userId) || 0;
 
-      // Invite Check Flow
       userConversationStage.set(userId, stage + 1);
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -439,7 +498,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Sends 2 separate messages
       await sendSeparateDMs(message.author, preText, progressMsg);
       return;
     }
@@ -449,7 +507,7 @@ client.on("messageCreate", async (message) => {
 
     const content = message.content.trim();
 
-    // Admin reset
+    // Admin commands
     if (content.toLowerCase().startsWith("!resetinvites")) {
       if (!message.member?.permissions.has("ADMINISTRATOR")) return;
 
@@ -464,6 +522,8 @@ client.on("messageCreate", async (message) => {
       userConversationStage.delete(target.id);
       humanInquiryCount.delete(target.id);
       nonTriggerStage.delete(target.id);
+
+      saveData();
 
       await logToCheckChannel(
         `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
@@ -536,7 +596,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Sends 2 separate messages
       await sendSeparateChannelMessages(message.channel, preText, progressMsg);
     }
   } catch (err) {
@@ -551,4 +610,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-  
+    
