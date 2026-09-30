@@ -1,6 +1,8 @@
 "use strict";
 
 const { Client } = require("discord.js-selfbot-v13");
+const fs = require("fs");
+const path = require("path");
 
 // ---------------------------------------------------------------------------
 // Global Error Handlers (Prevents silent crashes)
@@ -14,7 +16,7 @@ process.on("uncaughtException", (err) => {
 });
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Configuration & Persistent Storage
 // ---------------------------------------------------------------------------
 const { DISCORD_TOKEN, GUILD_ID, CHECK_CHANNEL_ID } = process.env;
 
@@ -26,13 +28,36 @@ if (missing.length) {
   process.exit(1);
 }
 
+const MILESTONES_FILE = path.join(__dirname, "milestones.json");
+
+function loadMilestones() {
+  try {
+    if (fs.existsSync(MILESTONES_FILE)) {
+      const data = fs.readFileSync(MILESTONES_FILE, "utf8");
+      return new Map(Object.entries(JSON.parse(data)));
+    }
+  } catch (err) {
+    console.error("Failed to load milestones file:", err.message);
+  }
+  return new Map();
+}
+
+function saveMilestones() {
+  try {
+    const obj = Object.fromEntries(sentMilestones.entries());
+    fs.writeFileSync(MILESTONES_FILE, JSON.stringify(obj, null, 2));
+  } catch (err) {
+    console.error("Failed to save milestones file:", err.message);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // In-memory runtime state
 // ---------------------------------------------------------------------------
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
-const sentMilestones = new Map();
+const sentMilestones = loadMilestones();
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 15_000;
@@ -98,7 +123,7 @@ const HUMAN_BOT_KEYWORDS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Client Initialization with Safe Intents
+// Client Initialization
 // ---------------------------------------------------------------------------
 const client = new Client({
   checkUpdate: false,
@@ -114,6 +139,23 @@ const client = new Client({
 // Helpers
 // ---------------------------------------------------------------------------
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function forceAcceptDM(clientInstance, channelId) {
+  try {
+    if (clientInstance.api) {
+      await clientInstance.api.users['@me'].channels[channelId].consent.post({
+        data: { consent_status: 1 }
+      });
+    }
+  } catch (err) {
+    try {
+      const channel = clientInstance.channels.cache.get(channelId);
+      if (channel && typeof channel.accept === "function") {
+        await channel.accept();
+      }
+    } catch (_) {}
+  }
+}
 
 async function getRealInviteCount(guild, userId) {
   try {
@@ -320,15 +362,11 @@ client.on("messageCreate", async (message) => {
 
     // Direct Messages (DMs)
     if (!message.guild) {
-      // Automatically accept message requests if the function exists
-      if (typeof message.channel.accept === "function") {
-        await message.channel.accept().catch(() => {});
-      }
+      await forceAcceptDM(client, message.channel.id);
 
       const userId = message.author.id;
       const rawText = message.content.trim();
 
-      // 1. Handle Human/Bot Inquiry
       if (isHumanBotInquiry(rawText)) {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
@@ -341,7 +379,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // 2. Handle Legitimacy / Scam Inquiry
       if (isLegitimacyInquiry(rawText)) {
         await sendDM(
           message.author,
@@ -350,7 +387,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // 3. Handle Invite Trigger Phrases
       if (isTriggerPhrase(rawText)) {
         const now = Date.now();
         if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
@@ -361,8 +397,8 @@ client.on("messageCreate", async (message) => {
 
         const current = targetGuild ? await getRealInviteCount(targetGuild, userId) : 0;
         const target = nextRequired(current);
-        const flags = sentMilestones.get(userId) || { first: false, eight: false };
-        sentMilestones.set(userId, flags);
+        
+        let flags = sentMilestones.get(userId) || { first: false, eight: false };
 
         await logCheck(userId, current);
 
@@ -370,14 +406,19 @@ client.on("messageCreate", async (message) => {
         const wasAlready = isAlreadyPhrase(rawText);
         const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
 
-        if (current >= 3 && !flags.first) {
+        // Strict boundary checks so it never triggers for lower counts or repeats permanently
+        if (current >= 3 && current < 8 && !flags.first) {
           flags.first = true;
+          sentMilestones.set(userId, flags);
+          saveMilestones();
           await sendSeparateDMs(message.author, preText, MILESTONE_3_MESSAGE);
           return;
         }
 
         if (current >= 8 && !flags.eight) {
           flags.eight = true;
+          sentMilestones.set(userId, flags);
+          saveMilestones();
           await sendSeparateDMs(message.author, preText, MILESTONE_8_MESSAGE);
           return;
         }
@@ -389,7 +430,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Server Channels - Enforce matching target GUILD_ID and user mentioning the bot
+    // Server Channels
     if (message.guild.id !== GUILD_ID) return;
 
     if (message.mentions.users.has(client.user.id)) {
@@ -418,8 +459,8 @@ client.on("messageCreate", async (message) => {
 
         const current = await getRealInviteCount(targetGuild, userId);
         const target = nextRequired(current);
-        const flags = sentMilestones.get(userId) || { first: false, eight: false };
-        sentMilestones.set(userId, flags);
+        
+        let flags = sentMilestones.get(userId) || { first: false, eight: false };
 
         await logCheck(userId, current);
 
@@ -427,14 +468,18 @@ client.on("messageCreate", async (message) => {
         const wasAlready = isAlreadyPhrase(content);
         const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
 
-        if (current >= 3 && !flags.first) {
+        if (current >= 3 && current < 8 && !flags.first) {
           flags.first = true;
+          sentMilestones.set(userId, flags);
+          saveMilestones();
           await sendSeparateChannelMessages(message.channel, preText, MILESTONE_3_MESSAGE);
           return;
         }
 
         if (current >= 8 && !flags.eight) {
           flags.eight = true;
+          sentMilestones.set(userId, flags);
+          saveMilestones();
           await sendSeparateChannelMessages(message.channel, preText, MILESTONE_8_MESSAGE);
           return;
         }
@@ -454,4 +499,3 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-  
