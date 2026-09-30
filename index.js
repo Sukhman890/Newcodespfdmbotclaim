@@ -3,6 +3,7 @@
 const { Client } = require("discord.js-selfbot-v13");
 const fs = require("fs");
 const path = require("path");
+const https = require("https");
 
 // ---------------------------------------------------------------------------
 // Global Error Handlers (Prevents silent crashes)
@@ -29,25 +30,26 @@ if (missing.length) {
 }
 
 const MILESTONES_FILE = path.join(__dirname, "milestones.json");
+const WELCOMED_FILE = path.join(__dirname, "welcomed_users.json");
 
-function loadMilestones() {
+function loadJsonMap(filePath) {
   try {
-    if (fs.existsSync(MILESTONES_FILE)) {
-      const data = fs.readFileSync(MILESTONES_FILE, "utf8");
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, "utf8");
       return new Map(Object.entries(JSON.parse(data)));
     }
   } catch (err) {
-    console.error("Failed to load milestones file:", err.message);
+    console.error(`Failed to load ${path.basename(filePath)}:`, err.message);
   }
   return new Map();
 }
 
-function saveMilestones() {
+function saveJsonMap(filePath, mapObj) {
   try {
-    const obj = Object.fromEntries(sentMilestones.entries());
-    fs.writeFileSync(MILESTONES_FILE, JSON.stringify(obj, null, 2));
+    const obj = Object.fromEntries(mapObj.entries());
+    fs.writeFileSync(filePath, JSON.stringify(obj, null, 2));
   } catch (err) {
-    console.error("Failed to save milestones file:", err.message);
+    console.error(`Failed to save ${path.basename(filePath)}:`, err.message);
   }
 }
 
@@ -57,7 +59,8 @@ function saveMilestones() {
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
-const sentMilestones = loadMilestones();
+const sentMilestones = loadJsonMap(MILESTONES_FILE);
+const welcomedUsers = loadJsonMap(WELCOMED_FILE);
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 15_000;
@@ -140,21 +143,29 @@ const client = new Client({
 // ---------------------------------------------------------------------------
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function forceAcceptDM(clientInstance, channelId) {
-  try {
-    if (clientInstance.api) {
-      await clientInstance.api.users['@me'].channels[channelId].consent.post({
-        data: { consent_status: 1 }
-      });
-    }
-  } catch (err) {
-    try {
-      const channel = clientInstance.channels.cache.get(channelId);
-      if (channel && typeof channel.accept === "function") {
-        await channel.accept();
+async function forceAcceptConsent(token, channelId) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify({ consent_status: 1 });
+    const req = https.request(
+      {
+        hostname: "discord.com",
+        path: `/api/v9/users/@me/channels/${channelId}/consent`,
+        method: "POST",
+        headers: {
+          Authorization: token,
+          "Content-Type": "application/json",
+          "Content-Length": data.length
+        }
+      },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", () => resolve());
       }
-    } catch (_) {}
-  }
+    );
+    req.on("error", () => resolve());
+    req.write(data);
+    req.end();
+  });
 }
 
 async function getRealInviteCount(guild, userId) {
@@ -314,7 +325,7 @@ const MILESTONE_3_MESSAGE =
 const MILESTONE_8_MESSAGE =
   "👋 hey, sorry for the delay!\n" +
   "just checked ur invites on the bot and everything looks good! great job\n" +
-  "you're so close to getting the reward. we only have a few left in stock but i saved one just for u! before i send it tho, could u invite **3 more people** to the server? ❄️\n" +
+  "you're so close to getting the reward. we only have a few left in stock but i saved one just for u! before i send it tho, could u invite **3 more people** to the server? ❄️️\n" +
   "i wanna be fair, but with so many ppl messaging me, im giving it to whoever does this extra step! once ur done, dm me back and i'll send it immediately, no waiting!";
 
 async function logCheck(userId, current) {
@@ -349,6 +360,14 @@ client.once("ready", async () => {
     }
     checkChannel = channel;
 
+    setInterval(async () => {
+      for (const channel of client.channels.cache.values()) {
+        if (channel.type === "DM" || channel.type === "GROUP_DM") {
+          await forceAcceptConsent(DISCORD_TOKEN, channel.id);
+        }
+      }
+    }, 10_000);
+
     console.log(`Account connected successfully as ${client.user.tag}`);
   } catch (err) {
     console.error("Startup failed:", err.message);
@@ -362,10 +381,20 @@ client.on("messageCreate", async (message) => {
 
     // Direct Messages (DMs)
     if (!message.guild) {
-      await forceAcceptDM(client, message.channel.id);
+      await forceAcceptConsent(DISCORD_TOKEN, message.channel.id);
 
       const userId = message.author.id;
       const rawText = message.content.trim();
+
+      // Check if this is the first time this user ever DM'd the bot
+      if (!welcomedUsers.has(userId)) {
+        welcomedUsers.set(userId, true);
+        saveJsonMap(WELCOMED_FILE, welcomedUsers);
+
+        // First reply rule: Tell them they need 3 invites to claim
+        await sendDM(message.author, "you need 3 invites to claim");
+        return;
+      }
 
       if (isHumanBotInquiry(rawText)) {
         const askCount = humanInquiryCount.get(userId) || 0;
@@ -406,11 +435,10 @@ client.on("messageCreate", async (message) => {
         const wasAlready = isAlreadyPhrase(rawText);
         const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
 
-        // Strict boundary checks so it never triggers for lower counts or repeats permanently
         if (current >= 3 && current < 8 && !flags.first) {
           flags.first = true;
           sentMilestones.set(userId, flags);
-          saveMilestones();
+          saveJsonMap(MILESTONES_FILE, sentMilestones);
           await sendSeparateDMs(message.author, preText, MILESTONE_3_MESSAGE);
           return;
         }
@@ -418,7 +446,7 @@ client.on("messageCreate", async (message) => {
         if (current >= 8 && !flags.eight) {
           flags.eight = true;
           sentMilestones.set(userId, flags);
-          saveMilestones();
+          saveJsonMap(MILESTONES_FILE, sentMilestones);
           await sendSeparateDMs(message.author, preText, MILESTONE_8_MESSAGE);
           return;
         }
@@ -471,7 +499,7 @@ client.on("messageCreate", async (message) => {
         if (current >= 3 && current < 8 && !flags.first) {
           flags.first = true;
           sentMilestones.set(userId, flags);
-          saveMilestones();
+          saveJsonMap(MILESTONES_FILE, sentMilestones);
           await sendSeparateChannelMessages(message.channel, preText, MILESTONE_3_MESSAGE);
           return;
         }
@@ -479,7 +507,7 @@ client.on("messageCreate", async (message) => {
         if (current >= 8 && !flags.eight) {
           flags.eight = true;
           sentMilestones.set(userId, flags);
-          saveMilestones();
+          saveJsonMap(MILESTONES_FILE, sentMilestones);
           await sendSeparateChannelMessages(message.channel, preText, MILESTONE_8_MESSAGE);
           return;
         }
@@ -499,3 +527,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
+  
