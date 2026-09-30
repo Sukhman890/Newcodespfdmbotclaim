@@ -27,11 +27,19 @@ const userConversationStage = new Map();
 const humanInquiryCount = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
-const RESPONSE_DELAY_MS = 5_000; // 5-second human-like delay
+const RESPONSE_DELAY_MS = 3_000;
 let checkChannel = null;
 
-// Trigger keywords for invite checking
+// Trigger keywords for invite checking (Triggers on ANY invite related word/message)
 const TRIGGER_KEYWORDS = [
+  "invite",
+  "invites",
+  "invited",
+  "inv",
+  "i invite 3 invites complete",
+  "invites complete",
+  "invite complete",
+  "3 invites complete",
   "done",
   "completed",
   "i have completed my invites",
@@ -57,7 +65,7 @@ const TRIGGER_KEYWORDS = [
   "already done"
 ];
 
-const CLAIM_REGEX = /\b(have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
+const CLAIM_REGEX = /\b(invite|invites|invited|inv|have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
 
 // Keywords for "are you human/bot" inquiries
 const HUMAN_BOT_KEYWORDS = [
@@ -119,10 +127,33 @@ async function sendDM(user, text) {
   }
 }
 
+// Helper to send 2 separate messages with a delay between them
+async function sendSeparateDMs(user, text1, text2) {
+  try {
+    await user.send(text1);
+    await delay(2000);
+    await user.send(text2);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 async function sendChannelMessage(channel, text) {
   try {
     await delay(RESPONSE_DELAY_MS);
     await channel.send(text);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+async function sendSeparateChannelMessages(channel, text1, text2) {
+  try {
+    await channel.send(text1);
+    await delay(2000);
+    await channel.send(text2);
     return true;
   } catch (err) {
     return false;
@@ -383,7 +414,7 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Invite Check Flow
+      // Invite Check Flow (Triggered on any invite message)
       userConversationStage.set(userId, stage + 1);
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -398,17 +429,18 @@ client.on("messageCreate", async (message) => {
 
       if (current >= 3 && !flags.first) {
         flags.first = true;
-        await sendDM(message.author, `${preText}\n\n${MILESTONE_3_MESSAGE}`);
+        await sendSeparateDMs(message.author, preText, MILESTONE_3_MESSAGE);
         return;
       }
 
       if (current >= 8 && !flags.eight) {
         flags.eight = true;
-        await sendDM(message.author, `${preText}\n\n${MILESTONE_8_MESSAGE}`);
+        await sendSeparateDMs(message.author, preText, MILESTONE_8_MESSAGE);
         return;
       }
 
-      await sendDM(message.author, `${preText}\n${progressMsg}`);
+      // Sends 2 separate messages
+      await sendSeparateDMs(message.author, preText, progressMsg);
       return;
     }
 
@@ -478,17 +510,18 @@ client.on("messageCreate", async (message) => {
 
       if (current >= 3 && !flags.first) {
         flags.first = true;
-        await sendChannelMessage(message.channel, `${preText}\n\n${MILESTONE_3_MESSAGE}`);
+        await sendSeparateChannelMessages(message.channel, preText, MILESTONE_3_MESSAGE);
         return;
       }
 
       if (current >= 8 && !flags.eight) {
         flags.eight = true;
-        await sendChannelMessage(message.channel, `${preText}\n\n${MILESTONE_8_MESSAGE}`);
+        await sendSeparateChannelMessages(message.channel, preText, MILESTONE_8_MESSAGE);
         return;
       }
 
-      await sendChannelMessage(message.channel, `${preText}\n${progressMsg}`);
+      // Sends 2 separate messages
+      await sendSeparateChannelMessages(message.channel, preText, progressMsg);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -502,4 +535,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-  
+    
