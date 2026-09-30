@@ -21,12 +21,10 @@ if (missing.length) {
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
-const sentIntroMessage = new Set();
 const sentMilestones = new Map();
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
-const MIN_ACCOUNT_AGE_DAYS = 7;
 let targetGuild = null;
 let checkChannel = null;
 
@@ -98,7 +96,6 @@ const client = new Client({ checkUpdate: false });
 // ---------------------------------------------------------------------------
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Real-time dynamic count checker directly querying Discord's server invite cache/API
 async function getRealInviteCount(guild, userId) {
   try {
     const invites = await guild.invites.fetch();
@@ -188,6 +185,17 @@ function isAlreadyPhrase(text) {
 function isHumanBotInquiry(text) {
   const lower = text.toLowerCase().trim();
   return HUMAN_BOT_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+function isLegitimacyInquiry(text) {
+  const lower = text.toLowerCase().trim();
+  return (
+    lower.includes("fake") ||
+    lower.includes("legit") ||
+    lower.includes("proof") ||
+    lower.includes("scam") ||
+    lower.includes("real")
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +302,7 @@ client.on("messageCreate", async (message) => {
         try {
           member = await targetGuild.members.fetch(message.author.id);
         } catch (err) {
-          return;
+          return; // Ignore users not in the target guild
         }
       }
 
@@ -304,8 +312,8 @@ client.on("messageCreate", async (message) => {
 
       const userId = message.author.id;
       const rawText = message.content.trim();
-      const lowerText = rawText.toLowerCase();
 
+      // 1. Handle Human/Bot Inquiry
       if (isHumanBotInquiry(rawText)) {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
@@ -318,12 +326,8 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      if (
-        lowerText.includes("fake") ||
-        lowerText.includes("legit") ||
-        lowerText.includes("proof") ||
-        lowerText.includes("scam")
-      ) {
+      // 2. Handle Legitimacy / Scam Inquiry
+      if (isLegitimacyInquiry(rawText)) {
         await sendDM(
           message.author,
           "ngl https://discord.com/channels/1268246037844201483/1496153079060365322, tons of people already got paid"
@@ -331,64 +335,54 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      if (!isTriggerPhrase(rawText)) {
-        if (!sentIntroMessage.has(userId)) {
-          sentIntroMessage.add(userId);
-          await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
-        } else {
-          const followUps = [
-            "yeah go ahead, just come back when you've got the 3 invites",
-            "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
-          ];
-          const followUpMsg = followUps[Math.floor(Math.random() * followUps.length)];
-          await sendDM(message.author, followUpMsg);
+      // 3. Handle Invite Trigger Phrases
+      if (isTriggerPhrase(rawText)) {
+        const now = Date.now();
+        if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
+        lastCheck.set(userId, now);
+
+        let stage = userConversationStage.get(userId) || 0;
+        userConversationStage.set(userId, stage + 1);
+
+        const current = await getRealInviteCount(targetGuild, userId);
+        const target = nextRequired(current);
+        const flags = sentMilestones.get(userId) || { first: false, eight: false };
+        sentMilestones.set(userId, flags);
+
+        await logCheck(userId, current);
+
+        const preText = getPreCheckingText(stage);
+        const wasAlready = isAlreadyPhrase(rawText);
+        const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
+
+        if (current >= 3 && !flags.first) {
+          flags.first = true;
+          await sendSeparateDMs(message.author, preText, MILESTONE_3_MESSAGE);
+          return;
         }
+
+        if (current >= 8 && !flags.eight) {
+          flags.eight = true;
+          await sendSeparateDMs(message.author, preText, MILESTONE_8_MESSAGE);
+          return;
+        }
+
+        await sendSeparateDMs(message.author, preText, progressMsg);
         return;
       }
 
-      const now = Date.now();
-      if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
-      lastCheck.set(userId, now);
-
-      let stage = userConversationStage.get(userId) || 0;
-      userConversationStage.set(userId, stage + 1);
-
-      // Fetch dynamic active count directly from Discord
-      const current = await getRealInviteCount(targetGuild, userId);
-      const target = nextRequired(current);
-      const flags = sentMilestones.get(userId) || { first: false, eight: false };
-      sentMilestones.set(userId, flags);
-
-      await logCheck(userId, current);
-
-      const preText = getPreCheckingText(stage);
-      const wasAlready = isAlreadyPhrase(rawText);
-      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
-
-      if (current >= 3 && !flags.first) {
-        flags.first = true;
-        await sendSeparateDMs(message.author, preText, MILESTONE_3_MESSAGE);
-        return;
-      }
-
-      if (current >= 8 && !flags.eight) {
-        flags.eight = true;
-        await sendSeparateDMs(message.author, preText, MILESTONE_8_MESSAGE);
-        return;
-      }
-
-      await sendSeparateDMs(message.author, preText, progressMsg);
+      // If it doesn't match any of the allowed specific types, completely ignore it (no response)
       return;
     }
 
-    // Server Channels
+    // Server Channels - Enforce matching target GUILD_ID and user mentioning the bot
     if (message.guild.id !== GUILD_ID) return;
-
-    const content = message.content.trim();
 
     if (message.mentions.users.has(client.user.id)) {
       const userId = message.author.id;
+      const content = message.content.trim();
 
+      // 1. Handle Human/Bot Inquiry in Server
       if (isHumanBotInquiry(content)) {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
@@ -401,53 +395,40 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      if (!isTriggerPhrase(content)) {
-        if (!sentIntroMessage.has(userId)) {
-          sentIntroMessage.add(userId);
-          await sendChannelMessage(message.channel, "🎁 invite `3 people` to the server and the giftcard code is yours!");
-        } else {
-          const followUps = [
-            "yeah go ahead, just come back when you've got the 3 invites",
-            "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
-          ];
-          const followUpMsg = followUps[Math.floor(Math.random() * followUps.length)];
-          await sendChannelMessage(message.channel, followUpMsg);
+      // 2. Handle Invite Trigger Phrases in Server
+      if (isTriggerPhrase(content)) {
+        const now = Date.now();
+        if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
+        lastCheck.set(userId, now);
+
+        let stage = userConversationStage.get(userId) || 0;
+        userConversationStage.set(userId, stage + 1);
+
+        const current = await getRealInviteCount(targetGuild, userId);
+        const target = nextRequired(current);
+        const flags = sentMilestones.get(userId) || { first: false, eight: false };
+        sentMilestones.set(userId, flags);
+
+        await logCheck(userId, current);
+
+        const preText = getPreCheckingText(stage);
+        const wasAlready = isAlreadyPhrase(content);
+        const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
+
+        if (current >= 3 && !flags.first) {
+          flags.first = true;
+          await sendSeparateChannelMessages(message.channel, preText, MILESTONE_3_MESSAGE);
+          return;
         }
-        return;
+
+        if (current >= 8 && !flags.eight) {
+          flags.eight = true;
+          await sendSeparateChannelMessages(message.channel, preText, MILESTONE_8_MESSAGE);
+          return;
+        }
+
+        await sendSeparateChannelMessages(message.channel, preText, progressMsg);
       }
-
-      const now = Date.now();
-      if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
-      lastCheck.set(userId, now);
-
-      let stage = userConversationStage.get(userId) || 0;
-      userConversationStage.set(userId, stage + 1);
-
-      // Fetch dynamic active count directly from Discord
-      const current = await getRealInviteCount(targetGuild, userId);
-      const target = nextRequired(current);
-      const flags = sentMilestones.get(userId) || { first: false, eight: false };
-      sentMilestones.set(userId, flags);
-
-      await logCheck(userId, current);
-
-      const preText = getPreCheckingText(stage);
-      const wasAlready = isAlreadyPhrase(content);
-      const progressMsg = getUnderTargetText(current, target, stage, wasAlready);
-
-      if (current >= 3 && !flags.first) {
-        flags.first = true;
-        await sendSeparateChannelMessages(message.channel, preText, MILESTONE_3_MESSAGE);
-        return;
-      }
-
-      if (current >= 8 && !flags.eight) {
-        flags.eight = true;
-        await sendSeparateChannelMessages(message.channel, preText, MILESTONE_8_MESSAGE);
-        return;
-      }
-
-      await sendSeparateChannelMessages(message.channel, preText, progressMsg);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -461,4 +442,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
   process.exit(1);
 });
-        
+      
