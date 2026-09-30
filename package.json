@@ -1,0 +1,15 @@
+{
+  "name": "discord-invite-tracker-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that tracks valid server invites in memory and reports progress via DM.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1"
+  }
+}
