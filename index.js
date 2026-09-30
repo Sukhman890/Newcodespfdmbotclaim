@@ -69,6 +69,7 @@ const sentMilestones = new Map();
 const lastCheck = new Map();
 const userConversationStage = new Map();
 const humanInquiryCount = new Map();
+const sentIntroMessage = new Set(); // Tracks users who already received the one-time intro
 
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
@@ -235,9 +236,9 @@ function isHumanBotInquiry(text) {
 // ---------------------------------------------------------------------------
 function getPreCheckingText(stage) {
   const variations = [
-    "sec, checking ur invites on the bot...",
     "one sec lemme check...",
-    "checking rq..."
+    "checking rq...",
+    "sec, checking ur invites on the bot..."
   ];
   return variations[stage % variations.length];
 }
@@ -249,15 +250,17 @@ function getUnderTargetText(current, target, stage, wasAlreadyClaim) {
   if (target === 3) {
     const texts = [
       `u only got ${current} rn bro, need ${target} to unlock — almost there`,
+      `showing ${current} invite(s) lol, just need ${remaining} more`,
       `ur at ${current} rn, get ${remaining} more and ur good`,
-      `showing ${current} invite(s) lol, just need ${remaining} more`
+      `almost, ${current} rn just need ${remaining} more`,
+      `checked and u got ${current}, need ${target} to reserve ur prize. almost there bro`
     ];
     mainText = texts[stage % texts.length];
   } else {
     const texts = [
-      `checked and u got ${current}, need ${target} to reserve ur prize. almost there bro`,
       `showing ${current} rn lol, get to ${target} and i lock ur payout in`,
-      `showing ${current} rn lol, get to ${target} and i lock ur payout in`
+      `ur at ${current}, need ${target} total to get in the instant payout line`,
+      `checked and u got ${current}, need ${target} to reserve ur prize. almost there bro`
     ];
     mainText = texts[stage % texts.length];
   }
@@ -455,7 +458,19 @@ client.on("messageCreate", async (message) => {
       }
 
       if (!isTriggerPhrase(rawText)) {
-        await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+        // Send one-time intro message only once per user
+        if (!sentIntroMessage.has(userId)) {
+          sentIntroMessage.add(userId);
+          await sendDM(message.author, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+        } else {
+          // Follow-up rotation messages for random non-trigger remarks
+          const followUps = [
+            "yeah go ahead, just come back when you've got the 3 invites",
+            "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
+          ];
+          const followUpMsg = followUps[Math.floor(Math.random() * followUps.length)];
+          await sendDM(message.author, followUpMsg);
+        }
         return;
       }
 
@@ -512,6 +527,7 @@ client.on("messageCreate", async (message) => {
       sentMilestones.delete(target.id);
       userConversationStage.delete(target.id);
       humanInquiryCount.delete(target.id);
+      sentIntroMessage.delete(target.id);
 
       saveData();
 
@@ -542,7 +558,17 @@ client.on("messageCreate", async (message) => {
       }
 
       if (!isTriggerPhrase(content)) {
-        await sendChannelMessage(message.channel, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+        if (!sentIntroMessage.has(userId)) {
+          sentIntroMessage.add(userId);
+          await sendChannelMessage(message.channel, "🎁 invite `3 people` to the server and the giftcard code is yours!");
+        } else {
+          const followUps = [
+            "yeah go ahead, just come back when you've got the 3 invites",
+            "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
+          ];
+          const followUpMsg = followUps[Math.floor(Math.random() * followUps.length)];
+          await sendChannelMessage(message.channel, followUpMsg);
+        }
         return;
       }
 
@@ -590,4 +616,3 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-      
