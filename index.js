@@ -182,10 +182,14 @@ async function sendDM(user, text) {
   }
 }
 
-// Fast DM helper (sends simultaneously)
+// Fast DM helper (sends simultaneously if text1 exists, otherwise just text2)
 async function sendSeparateDMs(user, text1, text2) {
   try {
-    await Promise.all([user.send(text1), user.send(text2)]);
+    if (text1) {
+      await Promise.all([user.send(text1), user.send(text2)]);
+    } else {
+      await user.send(text2);
+    }
     return true;
   } catch (err) {
     return false;
@@ -202,10 +206,14 @@ async function sendChannelMessage(channel, text) {
   }
 }
 
-// Fast Channel helper (sends simultaneously)
+// Fast Channel helper
 async function sendSeparateChannelMessages(channel, text1, text2) {
   try {
-    await Promise.all([channel.send(text1), channel.send(text2)]);
+    if (text1) {
+      await Promise.all([channel.send(text1), channel.send(text2)]);
+    } else {
+      await channel.send(text2);
+    }
     return true;
   } catch (err) {
     return false;
@@ -238,12 +246,12 @@ function isHumanBotInquiry(text) {
 // ---------------------------------------------------------------------------
 function getPreCheckingText(stage) {
   const variations = [
-    "sec, checking ur invites on the bot...",
-    "gimme a sec pulling ur invites up...",
-    "one sec lemme check...",
-    "hold on checking ur invites rq..."
+    "🎁 invite `3 people` to the server and the giftcard code/ mcfa is yours!",
+    "yeah go ahead, just come back when you've got the 3 invites",
+    "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
   ];
-  return variations[stage % variations.length];
+  // Returns intro message for stage 0, 1, 2; returns null afterwards
+  return stage < variations.length ? variations[stage] : null;
 }
 
 function getUnderTargetText(current, target, stage) {
@@ -433,7 +441,7 @@ client.on("messageCreate", async (message) => {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
 
-        if (askCount === 0) {
+        if (askCount % 2 === 0) {
           await sendDM(message.author, "lmao bro im real i just got like 50 dms rn 😭");
         } else {
           await sendDM(message.author, "bruh im real just type fast bc i got a lot of dms");
@@ -455,7 +463,6 @@ client.on("messageCreate", async (message) => {
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
       sentMilestones.set(userId, flags);
 
-      // Async background logging to avoid blocking response
       logCheck(userId);
 
       const preText = getPreCheckingText(stage);
@@ -517,7 +524,7 @@ client.on("messageCreate", async (message) => {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
 
-        if (askCount === 0) {
+        if (askCount % 2 === 0) {
           await sendChannelMessage(message.channel, "lmao bro im real i just got like 50 dms rn 😭");
         } else {
           await sendChannelMessage(message.channel, "bruh im real just type fast bc i got a lot of dms");
@@ -539,7 +546,6 @@ client.on("messageCreate", async (message) => {
       const flags = sentMilestones.get(userId) || { first: false, eight: false };
       sentMilestones.set(userId, flags);
 
-      // Async background logging
       logCheck(userId);
 
       const preText = getPreCheckingText(stage);
@@ -571,4 +577,4 @@ client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed (invalid personal token?):", err.message);
   process.exit(1);
 });
-  
+        
