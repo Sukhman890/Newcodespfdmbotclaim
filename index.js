@@ -90,6 +90,7 @@ const humanInquiryCount = new Map();
 const CHECK_COOLDOWN_MS = 5_000;
 const RESPONSE_DELAY_MS = 3_000;
 const MIN_ACCOUNT_AGE_DAYS = 7;
+let targetGuild = null;
 let checkChannel = null;
 
 // Trigger keywords for invite checking
@@ -396,10 +397,17 @@ function handleLeave(member) {
 client.once("ready", async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-    if (!guild) process.exit(1);
+    if (!guild) {
+      console.error("Configured guild is not available. Exiting.");
+      process.exit(1);
+    }
+    targetGuild = guild;
 
     const channel = await guild.channels.fetch(CHECK_CHANNEL_ID).catch(() => null);
-    if (!channel) process.exit(1);
+    if (!channel) {
+      console.error("Check channel not found. Exiting.");
+      process.exit(1);
+    }
     checkChannel = channel;
 
     await refreshInviteCache(guild).catch(() => null);
@@ -430,8 +438,21 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot || message.author.id === client.user.id) return;
 
-    // Direct Messages (DMs)
+    // Direct Messages (DMs) - Only process if user is in the target server
     if (!message.guild) {
+      if (!targetGuild) return;
+      
+      // Verify user is a member of the target server
+      let member = targetGuild.members.cache.get(message.author.id);
+      if (!member) {
+        try {
+          member = await targetGuild.members.fetch(message.author.id);
+        } catch (err) {
+          // User is not in the target server, ignore them completely
+          return;
+        }
+      }
+
       if (typeof message.channel.accept === "function") {
         await message.channel.accept().catch(() => null);
       }
@@ -465,7 +486,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // If it's NOT a trigger phrase, handle introduction or follow-ups strictly once
       if (!isTriggerPhrase(rawText)) {
         if (!sentIntroMessage.has(userId)) {
           sentIntroMessage.add(userId);
@@ -516,7 +536,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Server Channels
+    // Server Channels - Enforce matching target GUILD_ID exactly
     if (message.guild.id !== GUILD_ID) return;
 
     const content = message.content.trim();
@@ -621,6 +641,3 @@ client.on("messageCreate", async (message) => {
 // ---------------------------------------------------------------------------
 client.login(DISCORD_TOKEN).catch((err) => {
   console.error("Login failed:", err.message);
-  process.exit(1);
-});
-  
