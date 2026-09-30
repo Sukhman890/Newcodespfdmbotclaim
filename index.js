@@ -18,7 +18,7 @@ if (missing.length) {
 }
 
 // ---------------------------------------------------------------------------
-// Folder Persistence Setup (Saves to ./data/invites.json)
+// Folder Persistence Setup
 // ---------------------------------------------------------------------------
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "invites.json");
@@ -30,7 +30,7 @@ function ensureStorageExists() {
   if (!fs.existsSync(DATA_FILE)) {
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ inviteCounts: {}, countedMembers: {} }, null, 2)
+      JSON.stringify({ inviteCounts: {}, countedMembers: {}, userStages: {} }, null, 2)
     );
   }
 }
@@ -43,7 +43,7 @@ function loadSavedData() {
     return JSON.parse(raw);
   } catch (err) {
     console.error("Failed to read data/invites.json, initializing fresh data:", err.message);
-    return { inviteCounts: {}, countedMembers: {} };
+    return { inviteCounts: {}, countedMembers: {}, userStages: {} };
   }
 }
 
@@ -58,9 +58,13 @@ function saveData() {
     for (const [memberId, inviterId] of countedMembers.entries()) {
       membersObj[memberId] = inviterId;
     }
+    const stagesObj = {};
+    for (const [userId, stage] of userConversationStage.entries()) {
+      stagesObj[userId] = stage;
+    }
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj }, null, 2)
+      JSON.stringify({ inviteCounts: countsObj, countedMembers: membersObj, userStages: stagesObj }, null, 2)
     );
   } catch (err) {
     console.error("Failed to save data to data/invites.json:", err.message);
@@ -73,6 +77,7 @@ for (const [inviterId, memberArray] of Object.entries(initialData.inviteCounts |
   inviteCounts.set(inviterId, new Set(memberArray));
 }
 const countedMembers = new Map(Object.entries(initialData.countedMembers || {}));
+const userConversationStage = new Map(Object.entries(initialData.userStages || {}));
 
 // ---------------------------------------------------------------------------
 // In-memory runtime state
@@ -80,68 +85,27 @@ const countedMembers = new Map(Object.entries(initialData.countedMembers || {}))
 let inviteCache = new Map();
 const sentMilestones = new Map();
 const lastCheck = new Map();
-const userConversationStage = new Map();
 const humanInquiryCount = new Map();
 
 const CHECK_COOLDOWN_MS = 2_000;
 const MIN_ACCOUNT_AGE_DAYS = 7;
 let checkChannel = null;
 
-// Trigger keywords for invite checking
 const TRIGGER_KEYWORDS = [
-  "invite",
-  "invites",
-  "invited",
-  "inv",
-  "i invite 3 invites complete",
-  "invites complete",
-  "invite complete",
-  "3 invites complete",
-  "done",
-  "completed",
-  "i have completed my invites",
-  "now my reward",
-  "give me rewards",
-  "reward",
-  "check",
-  "invites done",
-  "i did",
-  "finished",
-  "claim",
-  "i got",
-  "i have",
-  "have 3",
-  "got 3",
-  "have 8",
-  "got 8",
-  "have 11",
-  "got 11",
-  "i have already",
-  "already invited",
-  "already my invites",
-  "already done"
+  "invite", "invites", "invited", "inv", "i invite 3 invites complete",
+  "invites complete", "invite complete", "3 invites complete", "done",
+  "completed", "i have completed my invites", "now my reward", "give me rewards",
+  "reward", "check", "invites done", "i did", "finished", "claim", "i got",
+  "i have", "have 3", "got 3", "have 8", "got 8", "have 11", "got 11",
+  "i have already", "already invited", "already my invites", "already done", "check again"
 ];
 
-const CLAIM_REGEX = /\b(invite|invites|invited|inv|have|got|did|done|made|already)\s*(\d+|\w+)?\b/i;
+const CLAIM_REGEX = /\b(invite|invites|invited|inv|have|got|did|done|made|already|check)\s*(\d+|\w+)?\b/i;
 
-// Keywords for "are you human/bot" inquiries
 const HUMAN_BOT_KEYWORDS = [
-  "are you bot",
-  "are u bot",
-  "r u bot",
-  "u bot",
-  "you bot",
-  "are you a bot",
-  "are u a bot",
-  "r u a bot",
-  "are you human",
-  "are u human",
-  "r u human",
-  "is this a bot",
-  "is this bot",
-  "real person",
-  "real human",
-  "ai bot"
+  "are you bot", "are u bot", "r u bot", "u bot", "you bot", "are you a bot",
+  "are u a bot", "r u a bot", "are you human", "are u human", "r u human",
+  "is this a bot", "is this bot", "real person", "real human", "ai bot"
 ];
 
 // ---------------------------------------------------------------------------
@@ -172,43 +136,25 @@ function snapshot(inv) {
   };
 }
 
-// Instant DM helper
-async function sendDM(user, text) {
+// Auto-accept DM requests and send message
+async function sendDM(channel, text) {
   try {
-    await user.send(text);
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-// Fast DM helper (sends simultaneously if text1 exists, otherwise just text2)
-async function sendSeparateDMs(user, text1, text2) {
-  try {
-    if (text1) {
-      await Promise.all([user.send(text1), user.send(text2)]);
-    } else {
-      await user.send(text2);
+    if (typeof channel.accept === "function") {
+      await channel.accept().catch(() => null);
     }
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-// Instant Channel helper
-async function sendChannelMessage(channel, text) {
-  try {
     await channel.send(text);
     return true;
   } catch (err) {
+    console.error("Failed to send DM:", err.message);
     return false;
   }
 }
 
-// Fast Channel helper
-async function sendSeparateChannelMessages(channel, text1, text2) {
+async function sendSeparateDMs(channel, text1, text2) {
   try {
+    if (typeof channel.accept === "function") {
+      await channel.accept().catch(() => null);
+    }
     if (text1) {
       await Promise.all([channel.send(text1), channel.send(text2)]);
     } else {
@@ -216,6 +162,7 @@ async function sendSeparateChannelMessages(channel, text1, text2) {
     }
     return true;
   } catch (err) {
+    console.error("Failed to send separate DMs:", err.message);
     return false;
   }
 }
@@ -231,9 +178,7 @@ async function logToCheckChannel(text) {
 
 function isTriggerPhrase(text) {
   const lower = text.toLowerCase().trim();
-  const matchedKeyword = TRIGGER_KEYWORDS.some((kw) => lower.includes(kw));
-  const matchedRegex = CLAIM_REGEX.test(lower);
-  return matchedKeyword || matchedRegex;
+  return TRIGGER_KEYWORDS.some((kw) => lower.includes(kw)) || CLAIM_REGEX.test(lower);
 }
 
 function isHumanBotInquiry(text) {
@@ -250,28 +195,15 @@ function getPreCheckingText(stage) {
     "yeah go ahead, just come back when you've got the 3 invites",
     "swamped rn 😭 if ur claiming just get the 3 invites and hit me up when they're in"
   ];
-  // Returns intro message for stage 0, 1, 2; returns null afterwards
   return stage < variations.length ? variations[stage] : null;
 }
 
-function getUnderTargetText(current, target, stage) {
+function getUnderTargetText(current, target) {
   const remaining = Math.max(0, target - current);
-
   if (target === 3) {
-    const texts = [
-      `u only got ${current} rn bro, need ${target} to unlock — almost there! just need ${remaining} more invites`,
-      `ur at ${current} rn, get ${remaining} more invites and ur good`,
-      `showing ${current} invite(s) lol, u need ${remaining} more invites to claim`
-    ];
-    return texts[stage % texts.length];
-  } else {
-    const texts = [
-      `checked and u got ${current} rn, need ${target} to reserve ur prize. get ${remaining} more invites bro`,
-      `showing ${current} rn lol, get ${remaining} more invites to reach ${target} and i lock ur payout in`,
-      `ur at ${current} invites, u need ${remaining} more to unlock the reward`
-    ];
-    return texts[stage % texts.length];
+    return `u only got ${current} rn bro, need 3 to unlock — almost there! just need ${remaining} more invites`;
   }
+  return `ur at ${current} invites, u need ${remaining} more to unlock the reward`;
 }
 
 const MILESTONE_3_MESSAGE =
@@ -300,7 +232,7 @@ async function logCheck(userId) {
 }
 
 // ---------------------------------------------------------------------------
-// Invite Detection & Syncing
+// Invite Tracking
 // ---------------------------------------------------------------------------
 async function refreshInviteCache(guild) {
   try {
@@ -309,7 +241,7 @@ async function refreshInviteCache(guild) {
     for (const inv of fresh.values()) map.set(inv.code, snapshot(inv));
     inviteCache = map;
   } catch (err) {
-    console.error("Could not fetch server invites. Make sure account has 'Manage Server' permission:", err.message);
+    console.error("Could not fetch server invites:", err.message);
   }
 }
 
@@ -318,7 +250,6 @@ async function detectUsedInvite(guild) {
   try {
     fresh = await guild.invites.fetch();
   } catch (err) {
-    console.error("Invite fetch failed (Needs Manage Server permission):", err.message);
     return null;
   }
 
@@ -352,14 +283,10 @@ let joinQueue = Promise.resolve();
 
 async function handleJoin(member) {
   const used = await detectUsedInvite(member.guild);
-
   if (member.user.bot || !used || !used.inviterId) return;
 
   const accountAgeDays = (Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24);
-  if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-    console.log(`Skipped counting invite for ${member.user.tag}: Account is too new (${accountAgeDays.toFixed(1)} days old).`);
-    return;
-  }
+  if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) return;
 
   const inviterId = used.inviterId;
   if (inviterId === client.user.id || inviterId === member.id || countedMembers.has(member.id)) return;
@@ -381,21 +308,15 @@ function handleLeave(member) {
 }
 
 // ---------------------------------------------------------------------------
-// Events
+// Client Events
 // ---------------------------------------------------------------------------
 client.once("ready", async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-    if (!guild) {
-      console.error("Configured guild is not available. Exiting.");
-      process.exit(1);
-    }
+    if (!guild) process.exit(1);
 
     const channel = await guild.channels.fetch(CHECK_CHANNEL_ID).catch(() => null);
-    if (!channel || (channel.type !== "GUILD_TEXT" && !channel.isText())) {
-      console.error("Private check channel not found or invalid. Exiting.");
-      process.exit(1);
-    }
+    if (!channel) process.exit(1);
     checkChannel = channel;
 
     await refreshInviteCache(guild);
@@ -414,9 +335,7 @@ client.on("inviteCreate", (invite) => {
 
 client.on("guildMemberAdd", (member) => {
   if (member.guild.id !== GUILD_ID) return;
-  joinQueue = joinQueue
-    .then(() => handleJoin(member))
-    .catch((err) => console.error("Join handling error:", err.message));
+  joinQueue = joinQueue.then(() => handleJoin(member)).catch((err) => console.error(err));
 });
 
 client.on("guildMemberRemove", (member) => {
@@ -424,27 +343,33 @@ client.on("guildMemberRemove", (member) => {
   handleLeave(member);
 });
 
+// Auto-accept DM requests when receiving a message request
+client.on("relationship", async (relationship) => {
+  if (relationship.type === 1 || relationship.type === 2) return;
+});
+
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot || message.author.id === client.user.id) return;
 
-    // Direct Messages (DMs)
+    // Direct Messages Handling
     if (!message.guild) {
+      const userId = message.author.id;
+      const rawText = message.content.trim();
+
+      // Always accept message requests on direct message
       if (typeof message.channel.accept === "function") {
         await message.channel.accept().catch(() => null);
       }
-
-      const userId = message.author.id;
-      const rawText = message.content.trim();
 
       if (isHumanBotInquiry(rawText)) {
         const askCount = humanInquiryCount.get(userId) || 0;
         humanInquiryCount.set(userId, askCount + 1);
 
         if (askCount % 2 === 0) {
-          await sendDM(message.author, "lmao bro im real i just got like 50 dms rn 😭");
+          await sendDM(message.channel, "lmao bro im real i just got like 50 dms rn 😭");
         } else {
-          await sendDM(message.author, "bruh im real just type fast bc i got a lot of dms");
+          await sendDM(message.channel, "bruh im real just type fast bc i got a lot of dms");
         }
         return;
       }
@@ -455,8 +380,7 @@ client.on("messageCreate", async (message) => {
       if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
       lastCheck.set(userId, now);
 
-      let stage = userConversationStage.get(userId) || 0;
-      userConversationStage.set(userId, stage + 1);
+      let stage = userConversationStage.get(userId) ?? 0;
 
       const current = getCount(userId);
       const target = nextRequired(current);
@@ -466,104 +390,25 @@ client.on("messageCreate", async (message) => {
       logCheck(userId);
 
       const preText = getPreCheckingText(stage);
-      const progressMsg = getUnderTargetText(current, target, stage);
+      const progressMsg = getUnderTargetText(current, target);
 
-      if (current >= 3 && !flags.first) {
-        flags.first = true;
-        await sendSeparateDMs(message.author, preText, MILESTONE_3_MESSAGE);
-        return;
-      }
-
-      if (current >= 8 && !flags.eight) {
-        flags.eight = true;
-        await sendSeparateDMs(message.author, preText, MILESTONE_8_MESSAGE);
-        return;
-      }
-
-      await sendSeparateDMs(message.author, preText, progressMsg);
-      return;
-    }
-
-    // Server Channels
-    if (message.guild.id !== GUILD_ID) return;
-
-    const content = message.content.trim();
-
-    // Admin reset command
-    if (content.toLowerCase().startsWith("!resetinvites")) {
-      if (!message.member?.permissions.has("ADMINISTRATOR")) return;
-
-      const target = message.mentions.users.first();
-      if (!target) {
-        await message.reply("Usage: `!resetinvites @user`");
-        return;
-      }
-
-      inviteCounts.delete(target.id);
-      sentMilestones.delete(target.id);
-      userConversationStage.delete(target.id);
-      humanInquiryCount.delete(target.id);
-
+      // Increment and save stage state
+      userConversationStage.set(userId, stage + 1);
       saveData();
 
-      logToCheckChannel(
-        `♻️ Invites Reset\nUser: <@${target.id}>\nUser ID: ${target.id}\nReset by: <@${message.author.id}>`
-      );
-      await message.reply({
-        content: `Reset tracked invites for <@${target.id}>.`,
-        allowedMentions: { parse: [] },
-      });
-      return;
-    }
-
-    // Channel Mentions
-    if (message.mentions.users.has(client.user.id)) {
-      const userId = message.author.id;
-
-      if (isHumanBotInquiry(content)) {
-        const askCount = humanInquiryCount.get(userId) || 0;
-        humanInquiryCount.set(userId, askCount + 1);
-
-        if (askCount % 2 === 0) {
-          await sendChannelMessage(message.channel, "lmao bro im real i just got like 50 dms rn 😭");
-        } else {
-          await sendChannelMessage(message.channel, "bruh im real just type fast bc i got a lot of dms");
-        }
-        return;
-      }
-
-      if (!isTriggerPhrase(content)) return;
-
-      const now = Date.now();
-      if (now - (lastCheck.get(userId) || 0) < CHECK_COOLDOWN_MS) return;
-      lastCheck.set(userId, now);
-
-      let stage = userConversationStage.get(userId) || 0;
-      userConversationStage.set(userId, stage + 1);
-
-      const current = getCount(userId);
-      const target = nextRequired(current);
-      const flags = sentMilestones.get(userId) || { first: false, eight: false };
-      sentMilestones.set(userId, flags);
-
-      logCheck(userId);
-
-      const preText = getPreCheckingText(stage);
-      const progressMsg = getUnderTargetText(current, target, stage);
-
       if (current >= 3 && !flags.first) {
         flags.first = true;
-        await sendSeparateChannelMessages(message.channel, preText, MILESTONE_3_MESSAGE);
+        await sendSeparateDMs(message.channel, preText, MILESTONE_3_MESSAGE);
         return;
       }
 
       if (current >= 8 && !flags.eight) {
         flags.eight = true;
-        await sendSeparateChannelMessages(message.channel, preText, MILESTONE_8_MESSAGE);
+        await sendSeparateDMs(message.channel, preText, MILESTONE_8_MESSAGE);
         return;
       }
 
-      await sendSeparateChannelMessages(message.channel, preText, progressMsg);
+      await sendSeparateDMs(message.channel, preText, progressMsg);
     }
   } catch (err) {
     console.error("Message handling error:", err.message);
@@ -574,7 +419,7 @@ client.on("messageCreate", async (message) => {
 // Login
 // ---------------------------------------------------------------------------
 client.login(DISCORD_TOKEN).catch((err) => {
-  console.error("Login failed (invalid personal token?):", err.message);
+  console.error("Login failed:", err.message);
   process.exit(1);
 });
-        
+                         
